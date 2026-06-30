@@ -20,6 +20,9 @@ class EvalStats:
     reward: float
     distance: float
     length: float
+    score: float
+    worst_reward: float
+    worst_length: float
 
 
 class ActorCritic(nn.Module):
@@ -95,9 +98,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument("--eval-interval", type=int, default=25)
-    parser.add_argument("--eval-episodes", type=int, default=5)
+    parser.add_argument("--eval-episodes", type=int, default=6)
     parser.add_argument("--output-dir", type=Path, default=Path("runs"))
     parser.add_argument("--domain-randomization", action="store_true")
+    parser.add_argument("--domain-randomization-strength", type=float, default=0.45)
     parser.add_argument("--randomize-command", action="store_true")
     parser.add_argument("--forward-command", type=float, default=1.0)
     parser.add_argument("--yaw-rate-command", type=float, default=0.0)
@@ -120,6 +124,7 @@ def main() -> None:
     envs = [
         BramTripodEnv(
             domain_randomization=args.domain_randomization,
+            domain_randomization_strength=args.domain_randomization_strength,
             randomize_command=args.randomize_command,
             command_forward=args.forward_command,
             command_yaw_rate=args.yaw_rate_command,
@@ -157,6 +162,7 @@ def main() -> None:
     print(
         "random_baseline "
         f"reward={random_stats.reward:.3f} "
+        f"score={random_stats.score:.3f} "
         f"distance={random_stats.distance:.4f} "
         f"length={random_stats.length:.1f}"
     )
@@ -164,12 +170,13 @@ def main() -> None:
         f"training total_steps={actual_total_steps} num_envs={args.num_envs} "
         f"rollout_steps={args.rollout_steps} obs_dim={obs_dim} action_dim={action_dim} "
         f"domain_randomization={args.domain_randomization} "
+        f"domain_randomization_strength={args.domain_randomization_strength:.2f} "
         f"randomize_command={args.randomize_command} "
         f"forward_command={args.forward_command:.2f} "
         f"yaw_rate_command={args.yaw_rate_command:.2f}"
     )
 
-    best_eval_distance = -float("inf")
+    best_eval_score = -float("inf")
     global_step = 0
     start_time = time.perf_counter()
 
@@ -184,8 +191,11 @@ def main() -> None:
                 "recent_distance",
                 "recent_length",
                 "eval_reward",
+                "eval_score",
                 "eval_distance",
                 "eval_length",
+                "eval_worst_reward",
+                "eval_worst_length",
                 "policy_loss",
                 "value_loss",
                 "entropy",
@@ -309,13 +319,20 @@ def main() -> None:
                     approx_kls.append(float(approx_kl.detach()))
 
             should_eval = update == 1 or update == num_updates or update % args.eval_interval == 0
-            eval_stats = EvalStats(float("nan"), float("nan"), float("nan"))
+            eval_stats = EvalStats(
+                float("nan"),
+                float("nan"),
+                float("nan"),
+                float("nan"),
+                float("nan"),
+                float("nan"),
+            )
             if should_eval:
                 eval_stats = evaluate_policy(
                     agent, args.eval_episodes, args.seed + 20_000 + update, args
                 )
-                if eval_stats.distance > best_eval_distance:
-                    best_eval_distance = eval_stats.distance
+                if eval_stats.score > best_eval_score:
+                    best_eval_score = eval_stats.score
                     save_checkpoint(best_checkpoint_path, agent, args, eval_stats)
 
             elapsed = time.perf_counter() - start_time
@@ -328,8 +345,11 @@ def main() -> None:
                 "recent_distance": mean_or_nan(recent_distances),
                 "recent_length": mean_or_nan(recent_lengths),
                 "eval_reward": eval_stats.reward,
+                "eval_score": eval_stats.score,
                 "eval_distance": eval_stats.distance,
                 "eval_length": eval_stats.length,
+                "eval_worst_reward": eval_stats.worst_reward,
+                "eval_worst_length": eval_stats.worst_length,
                 "policy_loss": float(np.mean(policy_losses)),
                 "value_loss": float(np.mean(value_losses)),
                 "entropy": float(np.mean(entropies)),
@@ -340,12 +360,14 @@ def main() -> None:
 
             if update == 1 or update == num_updates or update % 10 == 0 or should_eval:
                 eval_dist = f"{row['eval_distance']:.4f}" if should_eval else "skip"
+                eval_score = f"{row['eval_score']:.3f}" if should_eval else "skip"
                 print(
                     f"update={update:04d}/{num_updates} "
                     f"step={global_step} sps={sps} "
                     f"recent_return={row['recent_return']:.3f} "
                     f"recent_dist={row['recent_distance']:.4f} "
                     f"eval_dist={eval_dist} "
+                    f"eval_score={eval_score} "
                     f"entropy={row['entropy']:.3f}"
                 )
 
@@ -354,6 +376,7 @@ def main() -> None:
     print(
         "final_eval "
         f"reward={final_stats.reward:.3f} "
+        f"score={final_stats.score:.3f} "
         f"distance={final_stats.distance:.4f} "
         f"length={final_stats.length:.1f}"
     )
@@ -366,6 +389,7 @@ def evaluate_random(episodes: int, seed: int, args: argparse.Namespace) -> EvalS
     env = BramTripodEnv(
         randomize_reset=False,
         randomize_command=args.randomize_command,
+        domain_randomization_strength=args.domain_randomization_strength,
         command_forward=args.forward_command,
         command_yaw_rate=args.yaw_rate_command,
     )
@@ -389,7 +413,7 @@ def evaluate_random(episodes: int, seed: int, args: argparse.Namespace) -> EvalS
         rewards.append(total_reward)
         distances.append(distance_from_info(final_info))
         lengths.append(length + 1)
-    return EvalStats(float(np.mean(rewards)), float(np.mean(distances)), float(np.mean(lengths)))
+    return make_eval_stats(rewards, distances, lengths, env.max_steps, args)
 
 
 def evaluate_policy(
@@ -401,6 +425,7 @@ def evaluate_policy(
     env = BramTripodEnv(
         randomize_reset=False,
         randomize_command=args.randomize_command,
+        domain_randomization_strength=args.domain_randomization_strength,
         command_forward=args.forward_command,
         command_yaw_rate=args.yaw_rate_command,
     )
@@ -427,7 +452,7 @@ def evaluate_policy(
             distances.append(distance_from_info(final_info))
             lengths.append(length + 1)
     agent.train()
-    return EvalStats(float(np.mean(rewards)), float(np.mean(distances)), float(np.mean(lengths)))
+    return make_eval_stats(rewards, distances, lengths, env.max_steps, args)
 
 
 def save_checkpoint(
@@ -444,8 +469,11 @@ def save_checkpoint(
             "obs_dim": agent.obs_dim,
             "action_dim": agent.action_dim,
             "eval_reward": eval_stats.reward,
+            "eval_score": eval_stats.score,
             "eval_distance": eval_stats.distance,
             "eval_length": eval_stats.length,
+            "eval_worst_reward": eval_stats.worst_reward,
+            "eval_worst_length": eval_stats.worst_length,
         },
         path,
     )
@@ -459,6 +487,32 @@ def mean_or_nan(values: deque[float] | deque[int]) -> float:
 
 def distance_from_info(info: dict) -> float:
     return float(info.get("command_distance", info.get("x_distance", 0.0)))
+
+
+def make_eval_stats(
+    rewards: list[float],
+    distances: list[float],
+    lengths: list[int],
+    max_steps: int,
+    args: argparse.Namespace,
+) -> EvalStats:
+    mean_reward = float(np.mean(rewards))
+    mean_distance = float(np.mean(distances))
+    mean_length = float(np.mean(lengths))
+    worst_reward = float(np.min(rewards))
+    worst_length = float(np.min(lengths))
+    survival_shortfall = max(0.0, 0.90 * max_steps - worst_length)
+    score = mean_reward - 0.50 * survival_shortfall
+    if args.randomize_command:
+        score = mean_reward + 0.35 * worst_reward - 0.75 * survival_shortfall
+    return EvalStats(
+        mean_reward,
+        mean_distance,
+        mean_length,
+        float(score),
+        worst_reward,
+        worst_length,
+    )
 
 
 def eval_command(
