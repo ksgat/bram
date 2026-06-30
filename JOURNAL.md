@@ -72,3 +72,43 @@ xiao esp32c3 off amazook: 10
 bec: ~7-10$
 imu off adafruit: 20
 misc hardware (M3 hardware kit): 15
+
+6/30 afternoon
+
+- Made chassis, battery, and servo cans non-contact in MuJoCo.
+  Since I do not trust a random PLA/battery friction estimate, the body now acts as visual/mass geometry and the floor interaction is mostly feet/legs instead of fake chassis sledding.
+
+- Changed "alive" into a liberal limit gate.
+  The env no longer pays the robot for being upright/alive; it only terminates for battery-side-down-ish orientation, extreme low body height, or invalid sim state.
+
+- Added retroactive training visualization.
+  `train_ppo.py` can save snapshots with `--snapshot-interval`, and `visualize_training_run.py` replays those checkpoints in order after the run.
+
+- Found the stationary local optimum.
+  With the v4 reward, standing still on forward command scored around `-7`, so PPO learned quiet non-motion instead of risking movement.
+
+- Reworked exploration/reward into `forward_yaw_heading_v5`.
+  Added command stall penalties, immediate command-motion bonus, higher movement payoff, lower early regularization, and higher PPO entropy/action std so standing still gets punished harder.
+
+- Current reward direction.
+  Command obedience stays primary; next polish should target crawl quality with foot-slip penalties and progress-per-effort rather than generic prettiness.
+
+6/30 evening general-policy rewrite
+
+- Compared the old movers against the newer generalist runs.
+  The successful runs were forward specialists with dense progress reward; the failed generalist runs mostly learned lower-penalty stationary behavior.
+
+- Identified forward as the only solved primitive.
+  `runs/ppo_20260630_002841` and related v3 runs moved well, while yaw/back/mixed command training still had near-zero command distance.
+
+- Rewrote the env as `forward_yaw_heading_v9`.
+  The reward now pays dense forward/yaw progress first, then applies wrong-way, stall, extra-motion, heading, smoothness, and crawl-polish penalties after the robot has a chance to move.
+
+- Slowed the command curriculum.
+  Training now stages positive forward, forward/back, yaw-only, gentle arcs, then full joystick commands instead of blending the whole command space too early.
+
+- Updated checkpoint selection.
+  Eval defaults to the full 13-command suite, and score now includes command distance so lower-penalty non-motion is less likely to look like the best policy.
+
+- Smoke check result.
+  Zero action is now clearly bad for active commands, idle is rewarded for staying still, and a 4k PPO smoke completed with positive early curriculum returns but no learned full general gait yet.

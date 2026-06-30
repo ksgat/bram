@@ -86,26 +86,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=4)
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--hidden-size", type=int, default=64)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-coef", type=float, default=0.2)
-    parser.add_argument("--entropy-coef", type=float, default=0.015)
+    parser.add_argument("--entropy-coef", type=float, default=0.004)
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    parser.add_argument("--target-kl", type=float, default=0.06)
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument("--eval-interval", type=int, default=25)
-    parser.add_argument("--eval-episodes", type=int, default=6)
+    parser.add_argument("--eval-episodes", type=int, default=13)
     parser.add_argument("--output-dir", type=Path, default=Path("runs"))
     parser.add_argument("--domain-randomization", action="store_true")
     parser.add_argument("--domain-randomization-strength", type=float, default=0.45)
     parser.add_argument("--randomize-command", action="store_true")
+    parser.add_argument(
+        "--command-curriculum",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stage randomized commands from straight motion to full joystick control.",
+    )
     parser.add_argument("--forward-command", type=float, default=1.0)
     parser.add_argument("--yaw-rate-command", type=float, default=0.0)
-    parser.add_argument("--log-std-init", type=float, default=-0.5)
+    parser.add_argument("--log-std-init", type=float, default=-1.2)
     parser.add_argument(
         "--snapshot-interval",
         type=int,
@@ -135,6 +142,8 @@ def main() -> None:
             domain_randomization=args.domain_randomization,
             domain_randomization_strength=args.domain_randomization_strength,
             randomize_command=args.randomize_command,
+            command_curriculum=args.command_curriculum,
+            command_curriculum_level=0.0 if args.command_curriculum else 1.0,
             command_forward=args.forward_command,
             command_yaw_rate=args.yaw_rate_command,
         )
@@ -181,6 +190,7 @@ def main() -> None:
         f"domain_randomization={args.domain_randomization} "
         f"domain_randomization_strength={args.domain_randomization_strength:.2f} "
         f"randomize_command={args.randomize_command} "
+        f"command_curriculum={args.command_curriculum} "
         f"forward_command={args.forward_command:.2f} "
         f"yaw_rate_command={args.yaw_rate_command:.2f}"
     )
@@ -195,6 +205,7 @@ def main() -> None:
             fieldnames=[
                 "update",
                 "global_step",
+                "command_curriculum_level",
                 "sps",
                 "recent_return",
                 "recent_distance",
@@ -214,6 +225,10 @@ def main() -> None:
         writer.writeheader()
 
         for update in range(1, num_updates + 1):
+            command_curriculum_level = curriculum_level(update, num_updates, args)
+            for env in envs:
+                env.set_command_curriculum_level(command_curriculum_level)
+
             for step in range(args.rollout_steps):
                 global_step += args.num_envs
                 obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32)
@@ -291,6 +306,7 @@ def main() -> None:
             value_losses = []
             entropies = []
             approx_kls = []
+            stop_policy_update = False
             for _ in range(args.update_epochs):
                 indices = torch.randperm(batch_size)
                 for start in range(0, batch_size, minibatch_size):
@@ -326,6 +342,11 @@ def main() -> None:
                     value_losses.append(float(value_loss.detach()))
                     entropies.append(float(entropy_loss.detach()))
                     approx_kls.append(float(approx_kl.detach()))
+                    if args.target_kl > 0.0 and float(approx_kl.detach()) > args.target_kl:
+                        stop_policy_update = True
+                        break
+                if stop_policy_update:
+                    break
 
             should_snapshot = (
                 args.snapshot_interval > 0
@@ -370,6 +391,7 @@ def main() -> None:
             row = {
                 "update": update,
                 "global_step": global_step,
+                "command_curriculum_level": command_curriculum_level,
                 "sps": sps,
                 "recent_return": mean_or_nan(recent_returns),
                 "recent_distance": mean_or_nan(recent_distances),
@@ -394,6 +416,7 @@ def main() -> None:
                 print(
                     f"update={update:04d}/{num_updates} "
                     f"step={global_step} sps={sps} "
+                    f"cmd_level={command_curriculum_level:.2f} "
                     f"recent_return={row['recent_return']:.3f} "
                     f"recent_dist={row['recent_distance']:.4f} "
                     f"eval_dist={eval_dist} "
@@ -515,6 +538,26 @@ def mean_or_nan(values: deque[float] | deque[int]) -> float:
     return float(np.mean(values))
 
 
+def curriculum_level(
+    update: int,
+    num_updates: int,
+    args: argparse.Namespace,
+) -> float:
+    if not args.randomize_command or not args.command_curriculum:
+        return 1.0
+
+    progress = (update - 1) / max(1, num_updates - 1)
+    if progress < 0.28:
+        return 0.0
+    if progress < 0.48:
+        return 0.25
+    if progress < 0.68:
+        return 0.50
+    if progress < 0.86:
+        return 0.72
+    return 1.0
+
+
 def distance_from_info(info: dict) -> float:
     return float(info.get("command_distance", info.get("x_distance", 0.0)))
 
@@ -532,9 +575,14 @@ def make_eval_stats(
     worst_reward = float(np.min(rewards))
     worst_length = float(np.min(lengths))
     survival_shortfall = max(0.0, 0.90 * max_steps - worst_length)
-    score = mean_reward - 0.50 * survival_shortfall
+    score = mean_reward + 55.0 * mean_distance - 0.50 * survival_shortfall
     if args.randomize_command:
-        score = mean_reward + 0.35 * worst_reward - 0.75 * survival_shortfall
+        score = (
+            mean_reward
+            + 55.0 * mean_distance
+            + 0.25 * worst_reward
+            - 0.75 * survival_shortfall
+        )
     return EvalStats(
         mean_reward,
         mean_distance,
@@ -557,12 +605,19 @@ def eval_command(
         }
 
     eval_commands = [
+        (0.0, 0.0),
         (1.0, 0.0),
         (-1.0, 0.0),
+        (0.5, 0.0),
+        (-0.5, 0.0),
         (0.0, 1.0),
         (0.0, -1.0),
+        (0.0, 0.5),
+        (0.0, -0.5),
         (0.7, 0.7),
         (0.7, -0.7),
+        (-0.7, 0.7),
+        (-0.7, -0.7),
     ]
     forward, yaw_rate = eval_commands[episode % len(eval_commands)]
     return {"forward_command": forward, "yaw_rate_command": yaw_rate}

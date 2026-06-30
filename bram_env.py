@@ -28,10 +28,14 @@ RATED_SERVO_TORQUE_NM_AT_8V4 = SERVO_TORQUE_SPEC[-1][1]
 MAX_SERVO_SPEED_RAD_S = SERVO_SPEED_SPEC[-1][1]
 MAX_FORWARD_COMMAND_MPS = 0.15
 MAX_YAW_COMMAND_RAD_S = 1.2
+GAIT_PHASE_HZ = 1.4
+LINEAR_TRACKING_SIGMA_MPS = 0.070
+YAW_TRACKING_SIGMA_RAD_S = 0.50
+HEADING_TRACKING_SIGMA_RAD = 0.70
 MIN_CHASSIS_CENTER_HEIGHT_M = 0.008
 BATTERY_SIDE_DOWN_UPRIGHT_LIMIT = -0.25
 BATTERY_SIDE_WARNING_UPRIGHT = -0.10
-ENV_COMMAND_MODE = "forward_yaw_heading_v5"
+ENV_COMMAND_MODE = "forward_yaw_heading_v9"
 
 
 @dataclass
@@ -60,6 +64,8 @@ class BramTripodEnv(gym.Env):
         domain_randomization: bool | None = None,
         domain_randomization_strength: float = 0.45,
         randomize_command: bool | None = None,
+        command_curriculum: bool = True,
+        command_curriculum_level: float = 1.0,
         command_forward: float = 1.0,
         command_yaw_rate: float = 0.0,
     ) -> None:
@@ -80,6 +86,10 @@ class BramTripodEnv(gym.Env):
         self.randomize_command = (
             False if randomize_command is None else randomize_command
         )
+        self.command_curriculum = command_curriculum
+        self.command_curriculum_level = float(
+            np.clip(command_curriculum_level, 0.0, 1.0)
+        )
         self.fixed_command_forward = float(command_forward)
         self.fixed_command_yaw_rate = float(command_yaw_rate)
 
@@ -95,6 +105,9 @@ class BramTripodEnv(gym.Env):
             self._geom_id("back_left_rubber_tip"),
             self._geom_id("back_right_rubber_tip"),
         ]
+        self.foot_geom_index = {
+            geom_id: index for index, geom_id in enumerate(self.foot_geom_ids)
+        }
         self.leg_geom_ids = [
             self._geom_id("front_leg_tube"),
             self._geom_id("back_left_leg_tube"),
@@ -142,6 +155,8 @@ class BramTripodEnv(gym.Env):
         self.command_distance = 0.0
         self.line_distance = 0.0
         self.yaw_distance = 0.0
+        self.command_quality_ema = 0.0
+        self.gait_phase = 0.0
         self.forward_command = 1.0
         self.yaw_rate_command = 0.0
         self.command = np.array([1.0, 0.0], dtype=np.float32)
@@ -230,15 +245,14 @@ class BramTripodEnv(gym.Env):
         self.command_distance = 0.0
         self.line_distance = 0.0
         self.yaw_distance = 0.0
+        self.command_quality_ema = 0.0
+        self.gait_phase = float(self.np_random.uniform()) if randomize else 0.0
         self._reset_imu_state()
         return self._get_obs(), self._reset_info()
 
     def _reset_command(self, options: dict[str, Any]) -> None:
         if self.randomize_command:
-            forward = float(self.np_random.uniform(-1.0, 1.0))
-            yaw_rate = float(self.np_random.uniform(-1.0, 1.0))
-            if abs(forward) < 0.20 and abs(yaw_rate) < 0.20:
-                forward = 1.0
+            forward, yaw_rate = self._sample_random_command()
         else:
             forward = self.fixed_command_forward
             yaw_rate = self.fixed_command_yaw_rate
@@ -252,6 +266,70 @@ class BramTripodEnv(gym.Env):
         self.forward_command = float(np.clip(forward, -1.0, 1.0))
         self.yaw_rate_command = float(np.clip(yaw_rate, -1.0, 1.0))
         self.command[:] = [self.forward_command, self.yaw_rate_command]
+
+    def set_command_curriculum_level(self, level: float) -> None:
+        self.command_curriculum_level = float(np.clip(level, 0.0, 1.0))
+
+    def _sample_random_command(self) -> tuple[float, float]:
+        if not self.command_curriculum:
+            return self._sample_full_command()
+
+        level = self.command_curriculum_level
+        mode = float(self.np_random.uniform())
+        if level < 0.20:
+            if mode < 0.10:
+                return 0.0, 0.0
+            return float(self.np_random.uniform(0.50, 1.0)), 0.0
+
+        if level < 0.40:
+            if mode < 0.08:
+                return 0.0, 0.0
+            if mode < 0.72:
+                return float(self.np_random.uniform(0.45, 1.0)), 0.0
+            return -float(self.np_random.uniform(0.35, 0.85)), 0.0
+
+        if level < 0.62:
+            if mode < 0.08:
+                return 0.0, 0.0
+            if mode < 0.66:
+                return self._signed_command_magnitude(0.40, 1.0), 0.0
+            return 0.0, self._signed_command_magnitude(0.35, 0.85)
+
+        if level < 0.82:
+            if mode < 0.06:
+                return 0.0, 0.0
+            if mode < 0.48:
+                return self._signed_command_magnitude(0.35, 1.0), 0.0
+            if mode < 0.76:
+                return 0.0, self._signed_command_magnitude(0.30, 0.85)
+            return (
+                self._signed_command_magnitude(0.35, 0.90),
+                self._signed_command_magnitude(0.20, 0.55),
+            )
+
+        return self._sample_full_command()
+
+    def _sample_full_command(self) -> tuple[float, float]:
+        mode = float(self.np_random.uniform())
+        if mode < 0.05:
+            return 0.0, 0.0
+
+        if mode < 0.40:
+            forward = self._signed_command_magnitude(0.35, 1.0)
+            return forward, 0.0
+
+        if mode < 0.65:
+            yaw_rate = self._signed_command_magnitude(0.35, 1.0)
+            return 0.0, yaw_rate
+
+        forward = self._signed_command_magnitude(0.35, 1.0)
+        yaw_rate = self._signed_command_magnitude(0.25, 0.80)
+        return forward, yaw_rate
+
+    def _signed_command_magnitude(self, low: float, high: float) -> float:
+        magnitude = float(self.np_random.uniform(low, high))
+        sign = -1.0 if float(self.np_random.uniform()) < 0.5 else 1.0
+        return sign * magnitude
 
     def step(
         self, action: np.ndarray
@@ -269,12 +347,19 @@ class BramTripodEnv(gym.Env):
 
         x_before = self._x_position()
         y_before = self._y_position()
+        foot_positions_before = self._foot_positions()
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)
         x_after = self._x_position()
         y_after = self._y_position()
+        foot_positions_after = self._foot_positions()
+        foot_horizontal_speeds = np.linalg.norm(
+            (foot_positions_after[:, :2] - foot_positions_before[:, :2]) / self.dt,
+            axis=1,
+        )
 
         self.steps += 1
+        self.gait_phase = (self.gait_phase + GAIT_PHASE_HZ * self.dt) % 1.0
         self._update_imu_state()
 
         world_x_velocity = (x_after - x_before) / self.dt
@@ -326,7 +411,15 @@ class BramTripodEnv(gym.Env):
         obs = self._get_obs()
         height = float(self.data.xpos[self.chassis_id, 2])
         upright = self._upright()
-        foot_contact_count = self._foot_contact_count()
+        foot_contact_mask = self._foot_contact_mask()
+        foot_contact_count = int(np.count_nonzero(foot_contact_mask))
+        contact_foot_speeds = foot_horizontal_speeds[foot_contact_mask]
+        mean_contact_foot_speed = (
+            float(np.mean(contact_foot_speeds)) if contact_foot_speeds.size else 0.0
+        )
+        max_contact_foot_speed = (
+            float(np.max(contact_foot_speeds)) if contact_foot_speeds.size else 0.0
+        )
         below_body_limit = height < MIN_CHASSIS_CENTER_HEIGHT_M
         battery_side_down = upright < BATTERY_SIDE_DOWN_UPRIGHT_LIMIT
         terminated = bool(
@@ -334,10 +427,11 @@ class BramTripodEnv(gym.Env):
         )
 
         episode_fraction = min(1.0, self.steps / self.max_steps)
-        coaching_ramp = smoothstep((episode_fraction - 0.18) / 0.52)
-        polish_ramp = smoothstep((episode_fraction - 0.35) / 0.45)
-        soft_penalty_scale = 0.20 + 0.80 * coaching_ramp
-        regularizer_scale = 0.08 + 0.92 * coaching_ramp
+        progress_pressure = smoothstep((episode_fraction - 0.05) / 0.25)
+        coaching_ramp = smoothstep((episode_fraction - 0.14) / 0.50)
+        polish_ramp = smoothstep((episode_fraction - 0.45) / 0.40)
+        soft_penalty_scale = 0.25 + 0.75 * coaching_ramp
+        regularizer_scale = 0.06 + 0.94 * coaching_ramp
         battery_orientation_quality = smoothstep(
             (upright - BATTERY_SIDE_DOWN_UPRIGHT_LIMIT)
             / (BATTERY_SIDE_WARNING_UPRIGHT - BATTERY_SIDE_DOWN_UPRIGHT_LIMIT)
@@ -345,37 +439,121 @@ class BramTripodEnv(gym.Env):
         alive_quality = 0.0 if terminated else battery_orientation_quality
         commanded_speed = abs(desired_forward_velocity)
         commanded_yaw_speed = abs(desired_yaw_rate)
+        command_activity = float(np.clip(forward_weight + yaw_weight, 0.0, 1.0))
+        idle_weight = 1.0 - command_activity
+        mixed_weight = forward_weight * yaw_weight
         rewarded_forward_progress = min(
             max(0.0, forward_progress),
-            max(0.04, 1.25 * commanded_speed),
+            max(0.035, 1.40 * commanded_speed),
         )
-        rewarded_yaw_progress = max(0.0, float(np.clip(yaw_progress, -3.0, 3.0)))
+        rewarded_yaw_progress = min(
+            max(0.0, float(yaw_progress)),
+            max(0.25, 1.35 * commanded_yaw_speed),
+        )
+        linear_error = line_velocity - desired_forward_velocity
+        cross_track_weight = 0.35 + 0.65 * max(0.0, 1.0 - yaw_weight)
+        linear_tracking_error = (
+            linear_error * linear_error
+            + np.square(cross_track_weight * cross_track_velocity)
+        )
+        linear_tracking_reward = float(
+            np.exp(-linear_tracking_error / np.square(LINEAR_TRACKING_SIGMA_MPS))
+        )
+        yaw_tracking_reward = tracking_exp(yaw_error, YAW_TRACKING_SIGMA_RAD_S)
+        heading_tracking_reward = tracking_exp(
+            self.heading_error,
+            HEADING_TRACKING_SIGMA_RAD,
+        )
+        straight_weight = forward_weight * max(0.0, 1.0 - yaw_weight)
+        heading_gate = 1.0 - 0.55 * straight_weight * (
+            1.0 - heading_tracking_reward
+        )
+        yaw_still_gate = 1.0 - 0.65 * straight_weight * (1.0 - yaw_tracking_reward)
+        gated_linear_tracking_reward = (
+            linear_tracking_reward * heading_gate * yaw_still_gate
+        )
+        coupled_tracking_reward = (
+            gated_linear_tracking_reward
+            * (
+                yaw_tracking_reward
+                if yaw_weight > 0.05 or straight_weight > 0.05
+                else 1.0
+            )
+        )
+        idle_tracking_reward = idle_weight * tracking_exp(planar_speed, 0.035) * (
+            tracking_exp(yaw_rate, 0.35)
+        )
         forward_motion_quality = (
-            smoothstep(forward_progress / max(0.025, 0.35 * commanded_speed))
+            smoothstep(forward_progress / max(0.020, 0.30 * commanded_speed))
             if commanded_speed > 1e-6
             else 0.0
         )
         yaw_motion_quality = (
-            smoothstep(yaw_progress / max(0.20, 0.35 * commanded_yaw_speed))
+            smoothstep(yaw_progress / max(0.15, 0.30 * commanded_yaw_speed))
             if commanded_yaw_speed > 1e-6
             else 0.0
         )
+        command_quality = (
+            (
+                forward_weight * gated_linear_tracking_reward
+                + yaw_weight * yaw_tracking_reward
+            )
+            / max(1e-6, forward_weight + yaw_weight)
+            if command_activity > 0.0
+            else idle_tracking_reward
+        )
+        self.command_quality_ema = 0.93 * self.command_quality_ema + 0.07 * float(
+            command_quality
+        )
+        crawl_polish_gate = (
+            alive_quality
+            * command_activity
+            * smoothstep((self.command_quality_ema - 0.20) / 0.45)
+            * smoothstep((episode_fraction - 0.10) / 0.25)
+        )
+        support_deficit = max(0, 2 - foot_contact_count)
+        slip_excess = np.maximum(0.0, contact_foot_speeds - 0.020)
+        foot_slip_cost = (
+            crawl_polish_gate
+            * (
+                0.08 * float(np.mean(slip_excess))
+                + 0.18 * float(np.mean(np.square(slip_excess)))
+            )
+            if slip_excess.size
+            else 0.0
+        )
+        support_deficit_cost = crawl_polish_gate * 0.035 * support_deficit
+        crawl_effort_cost = crawl_polish_gate * (
+            0.009 * float(np.mean(np.abs(action_delta)))
+            + 0.012 * float(np.mean(np.abs(action_accel)))
+        )
 
+        progress_reward = alive_quality * (
+            10.5 * rewarded_forward_progress * (0.55 + 0.45 * heading_gate)
+            + 1.10 * yaw_weight * rewarded_yaw_progress
+        )
         forward_reward = (
             forward_weight
             * alive_quality
-            * 9.5
-            * rewarded_forward_progress
+            * (
+                0.54 * forward_motion_quality
+                + 0.18 * gated_linear_tracking_reward
+            )
         )
         yaw_reward = (
             yaw_weight
             * alive_quality
-            * 1.2
-            * rewarded_yaw_progress
+            * (0.46 * yaw_motion_quality + 0.16 * yaw_tracking_reward)
+        )
+        command_tracking_reward = alive_quality * (
+            0.16 * forward_weight * gated_linear_tracking_reward
+            + 0.14 * yaw_weight * yaw_tracking_reward
+            + 0.10 * mixed_weight * coupled_tracking_reward
+            + 0.16 * idle_tracking_reward
         )
         command_motion_reward = alive_quality * (
-            0.12 * forward_weight * forward_motion_quality
-            + 0.12 * yaw_weight * yaw_motion_quality
+            0.06 * forward_weight * forward_motion_quality
+            + 0.06 * yaw_weight * yaw_motion_quality
         )
         forward_stall = (
             forward_weight
@@ -388,15 +566,18 @@ class BramTripodEnv(gym.Env):
             * smoothstep(yaw_weight / 0.20)
         )
         command_stall_penalty = alive_quality * (
-            0.14 * forward_stall + 0.14 * yaw_stall
+            progress_pressure * (0.20 * forward_stall + 0.16 * yaw_stall)
         )
         keep_going_reward = 0.0
         alive_reward = 0.0
-        wrong_way_penalty = soft_penalty_scale * 2.5 * max(0.0, -forward_progress)
+        wrong_way_penalty = soft_penalty_scale * (
+            5.5 * forward_weight * max(0.0, -forward_progress)
+            + 0.75 * yaw_weight * max(0.0, -yaw_progress)
+        )
         overspeed_penalty = (
             soft_penalty_scale
             * forward_weight
-            * 0.55
+            * 0.35
             * max(0.0, forward_progress - max(0.05, 1.35 * commanded_speed))
         )
         upright_penalty = (
@@ -408,44 +589,49 @@ class BramTripodEnv(gym.Env):
             soft_penalty_scale
             * straight_weight
             * (
-                0.16 * abs(cross_track_velocity)
-                + 0.18 * min(abs(self.cross_track_error), 0.75)
+                0.10 * abs(cross_track_velocity)
+                + 0.12 * min(abs(self.cross_track_error), 0.75)
             )
         )
         translation_penalty = (
-            soft_penalty_scale * rotate_in_place_weight * 0.18 * planar_speed
+            soft_penalty_scale * rotate_in_place_weight * 0.10 * planar_speed
+        )
+        idle_motion_cost = alive_quality * idle_weight * (
+            0.30 * planar_speed + 0.12 * abs(yaw_rate)
         )
         forward_tracking_cost = (
-            soft_penalty_scale * forward_weight * 0.18 * abs(forward_error)
+            soft_penalty_scale * forward_weight * 0.025 * abs(forward_error)
         )
         yaw_tracking_cost = (
-            soft_penalty_scale * (0.12 + 0.16 * forward_weight + 0.12 * yaw_weight)
+            soft_penalty_scale * (0.02 + 0.18 * straight_weight + 0.08 * yaw_weight)
         ) * abs(yaw_error)
         heading_tracking_cost = (
-            soft_penalty_scale * (0.16 + 0.20 * forward_weight + 0.14 * yaw_weight)
+            soft_penalty_scale * (0.01 + 0.20 * straight_weight + 0.06 * yaw_weight)
         ) * min(abs(self.heading_error), np.pi * 0.5)
         roll_pitch_rate = float(np.linalg.norm(self._sensor("gyro", 3)[:2]))
         angular_rate_cost = (
-            soft_penalty_scale * 0.010 + polish_ramp * 0.035
+            soft_penalty_scale * 0.006 + polish_ramp * 0.020
         ) * roll_pitch_rate
-        airtime_cost = (soft_penalty_scale * 0.018 + polish_ramp * 0.025) * max(
+        airtime_cost = (soft_penalty_scale * 0.010 + polish_ramp * 0.018) * max(
             0, 2 - foot_contact_count
         )
-        ctrl_cost = regularizer_scale * 0.0030 * float(np.mean(np.square(action)))
-        smoothness_cost = (regularizer_scale * 0.012 + polish_ramp * 0.022) * float(
+        ctrl_cost = regularizer_scale * 0.0018 * float(np.mean(np.square(action)))
+        smoothness_cost = (regularizer_scale * 0.007 + polish_ramp * 0.017) * float(
             np.mean(np.square(action_delta))
         )
-        jerk_cost = (regularizer_scale * 0.016 + polish_ramp * 0.030) * float(
+        jerk_cost = (regularizer_scale * 0.008 + polish_ramp * 0.018) * float(
             np.mean(np.square(action_accel))
         )
         hinge_velocity_cost = (
-            regularizer_scale * 0.0012 + polish_ramp * 0.0018
+            regularizer_scale * 0.0006 + polish_ramp * 0.0012
         ) * self._hinge_velocity_cost()
         remaining_steps = max(0, self.max_steps - self.steps)
         termination_penalty = 35.0 + 0.16 * remaining_steps if terminated else 0.0
         reward = (
-            forward_reward
+            progress_reward
+            + forward_reward
             + yaw_reward
+            + command_tracking_reward
             + command_motion_reward
             + keep_going_reward
             + alive_reward
@@ -455,10 +641,14 @@ class BramTripodEnv(gym.Env):
             - upright_penalty
             - sideways_penalty
             - translation_penalty
+            - idle_motion_cost
             - forward_tracking_cost
             - yaw_tracking_cost
             - heading_tracking_cost
             - angular_rate_cost
+            - foot_slip_cost
+            - support_deficit_cost
+            - crawl_effort_cost
             - airtime_cost
             - ctrl_cost
             - smoothness_cost
@@ -477,6 +667,7 @@ class BramTripodEnv(gym.Env):
             "yaw_distance": self.yaw_distance,
             "forward_command": self.forward_command,
             "yaw_rate_command": self.yaw_rate_command,
+            "gait_phase": self.gait_phase,
             "desired_forward_velocity": desired_forward_velocity,
             "desired_yaw_rate": desired_yaw_rate,
             "forward_velocity": world_x_velocity,
@@ -499,16 +690,31 @@ class BramTripodEnv(gym.Env):
             "command_progress_rate": command_progress_rate,
             "forward_error": forward_error,
             "yaw_error": yaw_error,
+            "linear_tracking_reward": linear_tracking_reward,
+            "yaw_tracking_reward": yaw_tracking_reward,
+            "heading_tracking_reward": heading_tracking_reward,
+            "gated_linear_tracking_reward": gated_linear_tracking_reward,
+            "coupled_tracking_reward": coupled_tracking_reward,
+            "heading_gate": heading_gate,
+            "yaw_still_gate": yaw_still_gate,
+            "idle_tracking_reward": idle_tracking_reward,
             "forward_motion_quality": forward_motion_quality,
             "yaw_motion_quality": yaw_motion_quality,
+            "command_quality": command_quality,
+            "command_quality_ema": self.command_quality_ema,
+            "crawl_polish_gate": crawl_polish_gate,
             "planar_speed": planar_speed,
             "height": height,
             "upright": upright,
             "below_body_limit": below_body_limit,
             "battery_side_down": battery_side_down,
             "foot_contact_count": foot_contact_count,
+            "mean_contact_foot_speed": mean_contact_foot_speed,
+            "max_contact_foot_speed": max_contact_foot_speed,
+            "support_deficit": support_deficit,
             "remaining_steps": remaining_steps,
             "episode_fraction": episode_fraction,
+            "progress_pressure": progress_pressure,
             "coaching_ramp": coaching_ramp,
             "polish_ramp": polish_ramp,
             "soft_penalty_scale": soft_penalty_scale,
@@ -529,6 +735,8 @@ class BramTripodEnv(gym.Env):
             "imu_latency_steps": self.domain.imu_latency_steps,
             "forward_reward": forward_reward,
             "yaw_reward": yaw_reward,
+            "progress_reward": progress_reward,
+            "command_tracking_reward": command_tracking_reward,
             "command_motion_reward": command_motion_reward,
             "keep_going_reward": keep_going_reward,
             "alive_reward": alive_reward,
@@ -538,10 +746,14 @@ class BramTripodEnv(gym.Env):
             "upright_penalty": upright_penalty,
             "sideways_penalty": sideways_penalty,
             "translation_penalty": translation_penalty,
+            "idle_motion_cost": idle_motion_cost,
             "forward_tracking_cost": forward_tracking_cost,
             "yaw_tracking_cost": yaw_tracking_cost,
             "heading_tracking_cost": heading_tracking_cost,
             "angular_rate_cost": angular_rate_cost,
+            "foot_slip_cost": foot_slip_cost,
+            "support_deficit_cost": support_deficit_cost,
+            "crawl_effort_cost": crawl_effort_cost,
             "airtime_cost": airtime_cost,
             "ctrl_cost": ctrl_cost,
             "smoothness_cost": smoothness_cost,
@@ -556,12 +768,20 @@ class BramTripodEnv(gym.Env):
         heading_features = np.array(
             [np.sin(self.heading_error), np.cos(self.heading_error)], dtype=np.float32
         )
+        phase_features = np.array(
+            [
+                np.sin(2.0 * np.pi * self.gait_phase),
+                np.cos(2.0 * np.pi * self.gait_phase),
+            ],
+            dtype=np.float32,
+        )
         return np.concatenate(
             [
                 self.measured_gyro,
                 self.measured_accel_g,
                 self.measured_gravity,
                 self.command,
+                phase_features,
                 heading_features,
                 self.policy_action,
                 command_delta,
@@ -956,17 +1176,23 @@ class BramTripodEnv(gym.Env):
         velocities = self.data.qvel[self.hinge_dof_addresses]
         return float(np.mean(np.square(velocities)))
 
-    def _foot_contact_count(self) -> int:
-        contact_count = 0
+    def _foot_positions(self) -> np.ndarray:
+        return self.data.geom_xpos[self.foot_geom_ids].copy()
+
+    def _foot_contact_mask(self) -> np.ndarray:
+        contact_mask = np.zeros(len(self.foot_geom_ids), dtype=bool)
         for contact_index in range(self.data.ncon):
             contact = self.data.contact[contact_index]
             geom_1 = int(contact.geom1)
             geom_2 = int(contact.geom2)
-            if geom_1 == self.floor_id and geom_2 in self.foot_geom_ids:
-                contact_count += 1
-            elif geom_2 == self.floor_id and geom_1 in self.foot_geom_ids:
-                contact_count += 1
-        return min(contact_count, len(self.foot_geom_ids))
+            if geom_1 == self.floor_id and geom_2 in self.foot_geom_index:
+                contact_mask[self.foot_geom_index[geom_2]] = True
+            elif geom_2 == self.floor_id and geom_1 in self.foot_geom_index:
+                contact_mask[self.foot_geom_index[geom_1]] = True
+        return contact_mask
+
+    def _foot_contact_count(self) -> int:
+        return int(np.count_nonzero(self._foot_contact_mask()))
 
     def _reset_info(self) -> dict[str, float | int | bool]:
         return {
@@ -975,6 +1201,7 @@ class BramTripodEnv(gym.Env):
             "voltage": self._current_voltage(),
             "forward_command": self.forward_command,
             "yaw_rate_command": self.yaw_rate_command,
+            "gait_phase": self.gait_phase,
             "floor_friction": self.domain.floor_friction,
             "foot_friction": self.domain.foot_friction,
             "control_latency_steps": self.domain.control_latency_steps,
@@ -1014,6 +1241,11 @@ def wrap_angle(angle: float) -> float:
 def smoothstep(value: float) -> float:
     value = float(np.clip(value, 0.0, 1.0))
     return value * value * (3.0 - 2.0 * value)
+
+
+def tracking_exp(error: float, sigma: float) -> float:
+    sigma = max(float(sigma), 1e-6)
+    return float(np.exp(-np.square(float(error) / sigma)))
 
 
 def quat_from_euler(roll: float, pitch: float, yaw: float) -> np.ndarray:

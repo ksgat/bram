@@ -213,12 +213,19 @@ def command_for_episode(
         }
 
     commands = [
+        (0.0, 0.0),
         (1.0, 0.0),
         (-1.0, 0.0),
+        (0.5, 0.0),
+        (-0.5, 0.0),
         (0.0, 1.0),
         (0.0, -1.0),
+        (0.0, 0.5),
+        (0.0, -0.5),
         (0.7, 0.7),
         (0.7, -0.7),
+        (-0.7, 0.7),
+        (-0.7, -0.7),
     ]
     forward, yaw_rate = commands[(checkpoint_index + episode - 1) % len(commands)]
     return {"forward_command": forward, "yaw_rate_command": yaw_rate}
