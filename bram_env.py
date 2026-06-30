@@ -26,6 +26,9 @@ SERVO_SPEED_SPEC = (
 MAX_SERVO_TORQUE_NM = 3.0
 RATED_SERVO_TORQUE_NM_AT_8V4 = SERVO_TORQUE_SPEC[-1][1]
 MAX_SERVO_SPEED_RAD_S = SERVO_SPEED_SPEC[-1][1]
+MAX_FORWARD_COMMAND_MPS = 0.35
+MAX_YAW_COMMAND_RAD_S = 2.2
+ENV_COMMAND_MODE = "forward_yaw_v1"
 
 
 @dataclass
@@ -43,9 +46,9 @@ class BramTripodEnv(gym.Env):
     """Low-sensor MuJoCo env with sim-to-real randomization.
 
     The policy observes only signals that can exist on the robot:
-    IMU-derived values, a heading-derived command vector, and recent servo
-    commands. Rewards still use privileged simulator displacement because
-    rewards are not deployed.
+    IMU-derived values, forward/yaw commands, and recent servo commands.
+    Rewards still use privileged simulator displacement because rewards are
+    not deployed.
     """
 
     metadata = {"render_modes": []}
@@ -58,7 +61,8 @@ class BramTripodEnv(gym.Env):
         randomize_reset: bool = True,
         domain_randomization: bool | None = None,
         randomize_command: bool | None = None,
-        command_angle: float | None = None,
+        command_forward: float = 1.0,
+        command_yaw_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.xml_path = Path(xml_path)
@@ -72,7 +76,8 @@ class BramTripodEnv(gym.Env):
             randomize_reset if domain_randomization is None else domain_randomization
         )
         self.randomize_command = False if randomize_command is None else randomize_command
-        self.fixed_command_angle = command_angle
+        self.fixed_command_forward = float(command_forward)
+        self.fixed_command_yaw_rate = float(command_yaw_rate)
 
         self.chassis_id = self._body_id("chassis")
         self.leg_body_ids = [
@@ -99,6 +104,9 @@ class BramTripodEnv(gym.Env):
         self.hinge_qpos_addresses = [
             int(self.model.jnt_qposadr[joint_id]) for joint_id in self.hinge_joint_ids
         ]
+        self.hinge_dof_addresses = [
+            int(self.model.jnt_dofadr[joint_id]) for joint_id in self.hinge_joint_ids
+        ]
 
         self.ctrl_low = self.model.actuator_ctrlrange[:, 0].astype(np.float32)
         self.ctrl_high = self.model.actuator_ctrlrange[:, 1].astype(np.float32)
@@ -124,13 +132,13 @@ class BramTripodEnv(gym.Env):
         self.start_x = 0.0
         self.start_y = 0.0
         self.command_distance = 0.0
-        self.cross_track_error = 0.0
-        self.command_angle = 0.0
-        self.command_direction_world = np.array([1.0, 0.0], dtype=np.float32)
-        self.command_direction_body = np.array([1.0, 0.0], dtype=np.float32)
+        self.forward_command = 1.0
+        self.yaw_rate_command = 0.0
+        self.command = np.array([1.0, 0.0], dtype=np.float32)
 
         self.policy_action = np.zeros(self.model.nu, dtype=np.float32)
         self.previous_policy_action = np.zeros(self.model.nu, dtype=np.float32)
+        self.previous_action_delta = np.zeros(self.model.nu, dtype=np.float32)
         self.delayed_action = np.zeros(self.model.nu, dtype=np.float32)
         self.commanded_target_rad = self.ctrl_center.copy()
         self.applied_target_rad = self.ctrl_center.copy()
@@ -206,41 +214,34 @@ class BramTripodEnv(gym.Env):
         self.start_x = self._x_position()
         self.start_y = self._y_position()
         self.command_distance = 0.0
-        self.cross_track_error = 0.0
-        self._update_command_observation()
         self._reset_imu_state()
         return self._get_obs(), self._reset_info()
 
     def _reset_command(self, options: dict[str, Any]) -> None:
-        if "command_direction" in options:
-            direction = np.asarray(options["command_direction"], dtype=np.float32)[:2]
-            direction = normalize(direction)
-            if float(np.linalg.norm(direction)) < 1e-6:
-                direction = np.array([1.0, 0.0], dtype=np.float32)
-            angle = float(np.arctan2(direction[1], direction[0]))
-        elif "command_angle" in options:
-            angle = float(options["command_angle"])
-            direction = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
-        elif self.fixed_command_angle is not None:
-            angle = float(self.fixed_command_angle)
-            direction = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
-        elif self.randomize_command:
-            angle = float(self.np_random.uniform(-np.pi, np.pi))
-            direction = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
+        if self.randomize_command:
+            forward = float(self.np_random.uniform(-1.0, 1.0))
+            yaw_rate = float(self.np_random.uniform(-1.0, 1.0))
+            if abs(forward) < 0.20 and abs(yaw_rate) < 0.20:
+                forward = 1.0
         else:
-            angle = 0.0
-            direction = np.array([1.0, 0.0], dtype=np.float32)
+            forward = self.fixed_command_forward
+            yaw_rate = self.fixed_command_yaw_rate
 
-        self.command_angle = wrap_angle(angle)
-        self.command_direction_world[:] = normalize(direction).astype(np.float32)
-        self.command_direction_body[:] = self.command_direction_world
+        forward = float(options.get("forward_command", options.get("command_forward", forward)))
+        yaw_rate = float(options.get("yaw_rate_command", options.get("command_yaw_rate", yaw_rate)))
+        self.forward_command = float(np.clip(forward, -1.0, 1.0))
+        self.yaw_rate_command = float(np.clip(yaw_rate, -1.0, 1.0))
+        self.command[:] = [self.forward_command, self.yaw_rate_command]
 
     def step(
         self, action: np.ndarray
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        action_delta = action - self.policy_action
+        action_accel = action_delta - self.previous_action_delta
         self.previous_policy_action[:] = self.policy_action
         self.policy_action[:] = action
+        self.previous_action_delta[:] = action_delta
         self.delayed_action[:] = self._latency_action(action)
 
         self._update_servo_targets()
@@ -255,61 +256,49 @@ class BramTripodEnv(gym.Env):
 
         self.steps += 1
         self._update_imu_state()
-        self._update_command_observation()
         obs = self._get_obs()
 
         forward_velocity = (x_after - x_before) / self.dt
         lateral_velocity = (y_after - y_before) / self.dt
-        world_velocity = np.array([forward_velocity, lateral_velocity], dtype=np.float32)
-        command_velocity = float(np.dot(world_velocity, self.command_direction_world))
-        off_axis_velocity = float(
-            -self.command_direction_world[1] * world_velocity[0]
-            + self.command_direction_world[0] * world_velocity[1]
-        )
         body_velocity = self._world_velocity_to_body(forward_velocity, lateral_velocity)
         body_forward_velocity = float(body_velocity[0])
         body_lateral_velocity = float(body_velocity[1])
-        heading_error = float(
-            np.arctan2(self.command_direction_body[1], self.command_direction_body[0])
-        )
-        heading_alignment = float(self.command_direction_body[0])
-        displacement_world = np.array(
-            [x_after - self.start_x, y_after - self.start_y], dtype=np.float32
-        )
-        self.command_distance = float(
-            np.dot(displacement_world, self.command_direction_world)
-        )
-        self.cross_track_error = float(
-            -self.command_direction_world[1] * displacement_world[0]
-            + self.command_direction_world[0] * displacement_world[1]
-        )
+        yaw_rate = float(self._sensor("gyro", 3)[2])
+        desired_forward_velocity = self.forward_command * MAX_FORWARD_COMMAND_MPS
+        desired_yaw_rate = self.yaw_rate_command * MAX_YAW_COMMAND_RAD_S
+        forward_progress = self.forward_command * body_forward_velocity
+        yaw_progress = self.yaw_rate_command * yaw_rate
+        forward_error = body_forward_velocity - desired_forward_velocity
+        yaw_error = yaw_rate - desired_yaw_rate
+        self.command_distance += (forward_progress + 0.12 * yaw_progress) * self.dt
         height = float(self.data.xpos[self.chassis_id, 2])
         upright = self._upright()
-        action_delta = action - self.previous_policy_action
 
-        forward_reward = 5.0 * float(np.clip(command_velocity, -1.5, 2.5))
-        body_forward_reward = 0.8 * max(0.0, body_forward_velocity) * max(
-            0.0, heading_alignment
-        )
+        forward_reward = 5.0 * float(np.clip(forward_progress, -1.5, 2.5))
+        yaw_reward = 0.55 * float(np.clip(yaw_progress, -4.0, 4.0))
         alive_reward = 0.005 * max(0.0, upright)
-        backward_penalty = 2.0 * max(0.0, -command_velocity)
+        wrong_way_penalty = 2.0 * max(0.0, -forward_progress)
         upright_penalty = 0.06 * max(0.0, 0.35 - upright)
-        sideways_penalty = 0.045 * abs(body_lateral_velocity)
-        line_penalty = 0.04 * abs(self.cross_track_error)
-        heading_penalty = 0.020 * abs(heading_error)
+        sideways_penalty = 0.05 * abs(body_lateral_velocity)
+        forward_tracking_cost = 0.30 * abs(forward_error)
+        yaw_tracking_cost = 0.055 * abs(yaw_error)
         ctrl_cost = 0.004 * float(np.mean(np.square(action)))
-        smoothness_cost = 0.004 * float(np.mean(np.square(action_delta)))
+        smoothness_cost = 0.010 * float(np.mean(np.square(action_delta)))
+        jerk_cost = 0.020 * float(np.mean(np.square(action_accel)))
+        hinge_velocity_cost = 0.0015 * self._hinge_velocity_cost()
         reward = (
             forward_reward
-            + body_forward_reward
+            + yaw_reward
             + alive_reward
-            - backward_penalty
+            - wrong_way_penalty
             - upright_penalty
             - sideways_penalty
-            - line_penalty
-            - heading_penalty
+            - forward_tracking_cost
+            - yaw_tracking_cost
             - ctrl_cost
             - smoothness_cost
+            - jerk_cost
+            - hinge_velocity_cost
         )
 
         terminated = bool(
@@ -321,20 +310,19 @@ class BramTripodEnv(gym.Env):
             "x_distance": x_after - self.start_x,
             "y_distance": y_after - self.start_y,
             "command_distance": self.command_distance,
-            "cross_track_error": self.cross_track_error,
-            "command_angle": self.command_angle,
-            "command_x_world": float(self.command_direction_world[0]),
-            "command_y_world": float(self.command_direction_world[1]),
-            "command_x_body": float(self.command_direction_body[0]),
-            "command_y_body": float(self.command_direction_body[1]),
+            "forward_command": self.forward_command,
+            "yaw_rate_command": self.yaw_rate_command,
+            "desired_forward_velocity": desired_forward_velocity,
+            "desired_yaw_rate": desired_yaw_rate,
             "forward_velocity": forward_velocity,
             "lateral_velocity": lateral_velocity,
-            "command_velocity": command_velocity,
-            "off_axis_velocity": off_axis_velocity,
             "body_forward_velocity": body_forward_velocity,
             "body_lateral_velocity": body_lateral_velocity,
-            "heading_error": heading_error,
-            "heading_alignment": heading_alignment,
+            "yaw_rate": yaw_rate,
+            "forward_progress": forward_progress,
+            "yaw_progress": yaw_progress,
+            "forward_error": forward_error,
+            "yaw_error": yaw_error,
             "height": height,
             "upright": upright,
             "voltage": self._current_voltage(),
@@ -344,15 +332,17 @@ class BramTripodEnv(gym.Env):
             "control_latency_steps": self.domain.control_latency_steps,
             "imu_latency_steps": self.domain.imu_latency_steps,
             "forward_reward": forward_reward,
-            "body_forward_reward": body_forward_reward,
+            "yaw_reward": yaw_reward,
             "alive_reward": alive_reward,
-            "backward_penalty": backward_penalty,
+            "wrong_way_penalty": wrong_way_penalty,
             "upright_penalty": upright_penalty,
             "sideways_penalty": sideways_penalty,
-            "line_penalty": line_penalty,
-            "heading_penalty": heading_penalty,
+            "forward_tracking_cost": forward_tracking_cost,
+            "yaw_tracking_cost": yaw_tracking_cost,
             "ctrl_cost": ctrl_cost,
             "smoothness_cost": smoothness_cost,
+            "jerk_cost": jerk_cost,
+            "hinge_velocity_cost": hinge_velocity_cost,
         }
         return obs, float(reward), terminated, truncated, info
 
@@ -363,7 +353,7 @@ class BramTripodEnv(gym.Env):
                 self.measured_gyro,
                 self.measured_accel_g,
                 self.measured_gravity,
-                self.command_direction_body,
+                self.command,
                 self.policy_action,
                 command_delta,
             ]
@@ -486,6 +476,7 @@ class BramTripodEnv(gym.Env):
     def _reset_servo_state(self) -> None:
         self.policy_action[:] = 0
         self.previous_policy_action[:] = 0
+        self.previous_action_delta[:] = 0
         self.delayed_action[:] = 0
         self.commanded_target_rad[:] = self.ctrl_center
         self.applied_target_rad[:] = self.ctrl_center
@@ -702,38 +693,16 @@ class BramTripodEnv(gym.Env):
             dtype=np.float32,
         )
 
-    def _update_command_observation(self) -> None:
-        self.command_direction_body[:] = self._world_direction_to_body(
-            self.command_direction_world
-        )
-
-    def _world_direction_to_body(self, direction_world: np.ndarray) -> np.ndarray:
-        xmat = self.data.xmat[self.chassis_id].reshape(3, 3)
-        body_x_world = xmat[:, 0].copy()
-        body_y_world = xmat[:, 1].copy()
-        body_x_world[2] = 0.0
-        body_y_world[2] = 0.0
-        body_x_world = normalize(body_x_world)
-        body_y_world = normalize(body_y_world)
-        direction = normalize(np.asarray(direction_world, dtype=np.float64)[:2])
-        direction_3d = np.array([direction[0], direction[1], 0.0], dtype=np.float64)
-        return np.array(
-            [
-                np.dot(direction_3d, body_x_world),
-                np.dot(direction_3d, body_y_world),
-            ],
-            dtype=np.float32,
-        )
+    def _hinge_velocity_cost(self) -> float:
+        velocities = self.data.qvel[self.hinge_dof_addresses]
+        return float(np.mean(np.square(velocities)))
 
     def _reset_info(self) -> dict[str, float | int | bool]:
         return {
             "domain_randomization": self.domain.active,
             "voltage": self._current_voltage(),
-            "command_angle": self.command_angle,
-            "command_x_world": float(self.command_direction_world[0]),
-            "command_y_world": float(self.command_direction_world[1]),
-            "command_x_body": float(self.command_direction_body[0]),
-            "command_y_body": float(self.command_direction_body[1]),
+            "forward_command": self.forward_command,
+            "yaw_rate_command": self.yaw_rate_command,
             "floor_friction": self.domain.floor_friction,
             "foot_friction": self.domain.foot_friction,
             "control_latency_steps": self.domain.control_latency_steps,
@@ -764,10 +733,6 @@ def normalize(value: np.ndarray) -> np.ndarray:
     if norm < 1e-8:
         return np.zeros_like(value)
     return value / norm
-
-
-def wrap_angle(angle: float) -> float:
-    return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
 
 
 def quat_from_euler(roll: float, pitch: float, yaw: float) -> np.ndarray:

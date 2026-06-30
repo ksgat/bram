@@ -8,7 +8,7 @@ import mujoco
 import numpy as np
 import torch
 
-from bram_env import BramTripodEnv
+from bram_env import BramTripodEnv, ENV_COMMAND_MODE
 from train_ppo import ActorCritic
 
 
@@ -20,7 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--speed", type=float, default=1.0)
-    parser.add_argument("--command-angle-deg", type=float, default=0.0)
+    parser.add_argument("--forward-command", type=float, default=1.0)
+    parser.add_argument("--yaw-rate-command", type=float, default=0.0)
     parser.add_argument("--random-command", action="store_true")
     return parser.parse_args()
 
@@ -28,11 +29,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     checkpoint = args.checkpoint or latest_checkpoint()
-    command_angle = None if args.random_command else np.deg2rad(args.command_angle_deg)
     env = BramTripodEnv(
         randomize_reset=False,
         randomize_command=args.random_command,
-        command_angle=command_angle,
+        command_forward=args.forward_command,
+        command_yaw_rate=args.yaw_rate_command,
     )
     agent = load_agent(checkpoint, env)
     print(f"checkpoint={checkpoint}")
@@ -42,7 +43,7 @@ def main() -> None:
         print(
             f"episodes={args.episodes} "
             f"mean_reward={stats['reward']:.3f} "
-            f"mean_command_distance={stats['distance']:.4f} "
+            f"mean_command_progress={stats['distance']:.4f} "
             f"mean_length={stats['length']:.1f}"
         )
         return
@@ -72,6 +73,12 @@ def load_agent(checkpoint: Path, env: BramTripodEnv) -> ActorCritic:
             f"action_dim={checkpoint_action_dim}, but the current env is "
             f"obs_dim={obs_dim}, action_dim={action_dim}. Retrain after the "
             "environment rewrite before visualizing this policy."
+        )
+    checkpoint_command_mode = payload.get("env_command_mode")
+    if checkpoint_command_mode != ENV_COMMAND_MODE:
+        raise ValueError(
+            f"{checkpoint} was trained with env_command_mode={checkpoint_command_mode!r}, "
+            f"but the current env uses {ENV_COMMAND_MODE!r}. Retrain before visualizing."
         )
     agent = ActorCritic(obs_dim, action_dim, hidden_size)
     agent.load_state_dict(payload["model_state_dict"])
@@ -135,8 +142,9 @@ def run_viewer(env: BramTripodEnv, agent: ActorCritic, args: argparse.Namespace)
                 print(
                     f"episode={episode} "
                     f"reward={total_reward:.3f} "
-                    f"command_distance={distance_from_info(info):.4f} "
-                    f"command_angle_deg={np.rad2deg(info.get('command_angle', 0.0)):.1f} "
+                    f"command_progress={distance_from_info(info):.4f} "
+                    f"forward_cmd={info.get('forward_command', 0.0):.2f} "
+                    f"yaw_cmd={info.get('yaw_rate_command', 0.0):.2f} "
                     f"length={env.steps}"
                 )
                 episode += 1

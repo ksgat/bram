@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
 
-from bram_env import BramTripodEnv
+from bram_env import BramTripodEnv, ENV_COMMAND_MODE
 
 
 @dataclass
@@ -99,7 +99,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("runs"))
     parser.add_argument("--domain-randomization", action="store_true")
     parser.add_argument("--randomize-command", action="store_true")
-    parser.add_argument("--command-angle-deg", type=float, default=0.0)
+    parser.add_argument("--forward-command", type=float, default=1.0)
+    parser.add_argument("--yaw-rate-command", type=float, default=0.0)
     parser.add_argument("--log-std-init", type=float, default=-1.0)
     return parser.parse_args()
 
@@ -116,12 +117,12 @@ def main() -> None:
     checkpoint_path = run_dir / "policy.pt"
     best_checkpoint_path = run_dir / "policy_best.pt"
 
-    command_angle = np.deg2rad(args.command_angle_deg)
     envs = [
         BramTripodEnv(
             domain_randomization=args.domain_randomization,
             randomize_command=args.randomize_command,
-            command_angle=None if args.randomize_command else command_angle,
+            command_forward=args.forward_command,
+            command_yaw_rate=args.yaw_rate_command,
         )
         for _ in range(args.num_envs)
     ]
@@ -164,7 +165,8 @@ def main() -> None:
         f"rollout_steps={args.rollout_steps} obs_dim={obs_dim} action_dim={action_dim} "
         f"domain_randomization={args.domain_randomization} "
         f"randomize_command={args.randomize_command} "
-        f"command_angle_deg={args.command_angle_deg:.1f}"
+        f"forward_command={args.forward_command:.2f} "
+        f"yaw_rate_command={args.yaw_rate_command:.2f}"
     )
 
     best_eval_distance = -float("inf")
@@ -364,7 +366,8 @@ def evaluate_random(episodes: int, seed: int, args: argparse.Namespace) -> EvalS
     env = BramTripodEnv(
         randomize_reset=False,
         randomize_command=args.randomize_command,
-        command_angle=None if args.randomize_command else np.deg2rad(args.command_angle_deg),
+        command_forward=args.forward_command,
+        command_yaw_rate=args.yaw_rate_command,
     )
     rewards = []
     distances = []
@@ -373,7 +376,7 @@ def evaluate_random(episodes: int, seed: int, args: argparse.Namespace) -> EvalS
     for episode in range(episodes):
         obs, _ = env.reset(
             seed=seed + episode,
-            options={"command_angle": eval_command_angle(episode, episodes, args)},
+            options=eval_command(episode, episodes, args),
         )
         total_reward = 0.0
         final_info = {"command_distance": 0.0}
@@ -398,7 +401,8 @@ def evaluate_policy(
     env = BramTripodEnv(
         randomize_reset=False,
         randomize_command=args.randomize_command,
-        command_angle=None if args.randomize_command else np.deg2rad(args.command_angle_deg),
+        command_forward=args.forward_command,
+        command_yaw_rate=args.yaw_rate_command,
     )
     rewards = []
     distances = []
@@ -408,7 +412,7 @@ def evaluate_policy(
         for episode in range(episodes):
             obs, _ = env.reset(
                 seed=seed + episode,
-                options={"command_angle": eval_command_angle(episode, episodes, args)},
+                options=eval_command(episode, episodes, args),
             )
             total_reward = 0.0
             final_info = {"command_distance": 0.0}
@@ -436,6 +440,7 @@ def save_checkpoint(
         {
             "model_state_dict": agent.state_dict(),
             "args": vars(args),
+            "env_command_mode": ENV_COMMAND_MODE,
             "obs_dim": agent.obs_dim,
             "action_dim": agent.action_dim,
             "eval_reward": eval_stats.reward,
@@ -456,16 +461,27 @@ def distance_from_info(info: dict) -> float:
     return float(info.get("command_distance", info.get("x_distance", 0.0)))
 
 
-def eval_command_angle(
+def eval_command(
     episode: int,
     episodes: int,
     args: argparse.Namespace,
-) -> float:
+) -> dict[str, float]:
     if not args.randomize_command:
-        return float(np.deg2rad(args.command_angle_deg))
-    if episodes <= 1:
-        return 0.0
-    return float(2.0 * np.pi * episode / episodes)
+        return {
+            "forward_command": float(np.clip(args.forward_command, -1.0, 1.0)),
+            "yaw_rate_command": float(np.clip(args.yaw_rate_command, -1.0, 1.0)),
+        }
+
+    eval_commands = [
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (0.0, 1.0),
+        (0.0, -1.0),
+        (0.7, 0.7),
+        (0.7, -0.7),
+    ]
+    forward, yaw_rate = eval_commands[episode % len(eval_commands)]
+    return {"forward_command": forward, "yaw_rate_command": yaw_rate}
 
 
 if __name__ == "__main__":
