@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-coef", type=float, default=0.2)
-    parser.add_argument("--entropy-coef", type=float, default=0.005)
+    parser.add_argument("--entropy-coef", type=float, default=0.015)
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -105,7 +105,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--randomize-command", action="store_true")
     parser.add_argument("--forward-command", type=float, default=1.0)
     parser.add_argument("--yaw-rate-command", type=float, default=0.0)
-    parser.add_argument("--log-std-init", type=float, default=-1.0)
+    parser.add_argument("--log-std-init", type=float, default=-0.5)
+    parser.add_argument(
+        "--snapshot-interval",
+        type=int,
+        default=0,
+        help="Save policy snapshots every N PPO updates for retroactive visualization.",
+    )
     return parser.parse_args()
 
 
@@ -120,6 +126,9 @@ def main() -> None:
     log_path = run_dir / "metrics.csv"
     checkpoint_path = run_dir / "policy.pt"
     best_checkpoint_path = run_dir / "policy_best.pt"
+    snapshot_dir = run_dir / "snapshots"
+    if args.snapshot_interval > 0:
+        snapshot_dir.mkdir(exist_ok=True)
 
     envs = [
         BramTripodEnv(
@@ -318,7 +327,20 @@ def main() -> None:
                     entropies.append(float(entropy_loss.detach()))
                     approx_kls.append(float(approx_kl.detach()))
 
-            should_eval = update == 1 or update == num_updates or update % args.eval_interval == 0
+            should_snapshot = (
+                args.snapshot_interval > 0
+                and (
+                    update == 1
+                    or update == num_updates
+                    or update % args.snapshot_interval == 0
+                )
+            )
+            should_eval = (
+                update == 1
+                or update == num_updates
+                or update % args.eval_interval == 0
+                or should_snapshot
+            )
             eval_stats = EvalStats(
                 float("nan"),
                 float("nan"),
@@ -334,6 +356,14 @@ def main() -> None:
                 if eval_stats.score > best_eval_score:
                     best_eval_score = eval_stats.score
                     save_checkpoint(best_checkpoint_path, agent, args, eval_stats)
+                if should_snapshot:
+                    save_checkpoint(
+                        snapshot_dir
+                        / f"policy_update_{update:05d}_step_{global_step}.pt",
+                        agent,
+                        args,
+                        eval_stats,
+                    )
 
             elapsed = time.perf_counter() - start_time
             sps = int(global_step / max(elapsed, 1e-9))

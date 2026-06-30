@@ -83,6 +83,8 @@
                 name="chassis_triangle"
                 type="mesh"
                 mesh="triangle_chassis_mesh"
+                contype="0"
+                conaffinity="0"
                 mass="0.110"
                 material="print_blue"
             />
@@ -92,6 +94,8 @@
                 type="box"
                 pos="0.000 0.000 0.0217"
                 size="0.028 0.012 0.009"
+                contype="0"
+                conaffinity="0"
                 mass="0.057"
                 material="battery_blue"
             />
@@ -102,6 +106,8 @@
                 type="cylinder"
                 fromto="0.11155642 0.03259235 0 0.09755642 0.00834363 0"
                 size="0.012"
+                contype="0"
+                conaffinity="0"
                 mass="0.070"
                 material="servo_black"
             />
@@ -110,6 +116,8 @@
                 type="cylinder"
                 fromto="-0.08400401 0.08031452 0 -0.05600401 0.08031452 0"
                 size="0.012"
+                contype="0"
+                conaffinity="0"
                 mass="0.070"
                 material="servo_black"
             />
@@ -118,6 +126,8 @@
                 type="cylinder"
                 fromto="-0.02755241 -0.11290687 0 -0.04155241 -0.08865815 0"
                 size="0.012"
+                contype="0"
+                conaffinity="0"
                 mass="0.070"
                 material="servo_black"
             />
