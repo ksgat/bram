@@ -23,7 +23,13 @@ class EvalStats:
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, obs_dim: int, action_dim: int, hidden_size: int) -> None:
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_size: int,
+        log_std_init: float = -1.0,
+    ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -42,7 +48,7 @@ class ActorCritic(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(hidden_size, 1), std=1.0),
         )
-        self.log_std = nn.Parameter(torch.full((action_dim,), -0.7))
+        self.log_std = nn.Parameter(torch.full((action_dim,), log_std_init))
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
         return self.critic(obs).squeeze(-1)
@@ -81,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-coef", type=float, default=0.2)
-    parser.add_argument("--entropy-coef", type=float, default=0.01)
+    parser.add_argument("--entropy-coef", type=float, default=0.005)
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -91,6 +97,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-interval", type=int, default=25)
     parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--output-dir", type=Path, default=Path("runs"))
+    parser.add_argument("--domain-randomization", action="store_true")
+    parser.add_argument("--randomize-command", action="store_true")
+    parser.add_argument("--command-angle-deg", type=float, default=0.0)
+    parser.add_argument("--log-std-init", type=float, default=-1.0)
     return parser.parse_args()
 
 
@@ -106,7 +116,15 @@ def main() -> None:
     checkpoint_path = run_dir / "policy.pt"
     best_checkpoint_path = run_dir / "policy_best.pt"
 
-    envs = [BramTripodEnv() for _ in range(args.num_envs)]
+    command_angle = np.deg2rad(args.command_angle_deg)
+    envs = [
+        BramTripodEnv(
+            domain_randomization=args.domain_randomization,
+            randomize_command=args.randomize_command,
+            command_angle=None if args.randomize_command else command_angle,
+        )
+        for _ in range(args.num_envs)
+    ]
     obs_list = []
     for index, env in enumerate(envs):
         obs, _ = env.reset(seed=args.seed + index)
@@ -115,7 +133,7 @@ def main() -> None:
 
     obs_dim = obs_np.shape[1]
     action_dim = envs[0].action_space.shape[0]
-    agent = ActorCritic(obs_dim, action_dim, args.hidden_size)
+    agent = ActorCritic(obs_dim, action_dim, args.hidden_size, args.log_std_init)
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     num_updates = max(1, args.total_steps // (args.num_envs * args.rollout_steps))
@@ -134,7 +152,7 @@ def main() -> None:
     recent_distances: deque[float] = deque(maxlen=50)
     recent_lengths: deque[int] = deque(maxlen=50)
 
-    random_stats = evaluate_random(args.eval_episodes, args.seed + 10_000)
+    random_stats = evaluate_random(args.eval_episodes, args.seed + 10_000, args)
     print(
         "random_baseline "
         f"reward={random_stats.reward:.3f} "
@@ -143,7 +161,10 @@ def main() -> None:
     )
     print(
         f"training total_steps={actual_total_steps} num_envs={args.num_envs} "
-        f"rollout_steps={args.rollout_steps} obs_dim={obs_dim} action_dim={action_dim}"
+        f"rollout_steps={args.rollout_steps} obs_dim={obs_dim} action_dim={action_dim} "
+        f"domain_randomization={args.domain_randomization} "
+        f"randomize_command={args.randomize_command} "
+        f"command_angle_deg={args.command_angle_deg:.1f}"
     )
 
     best_eval_distance = -float("inf")
@@ -288,7 +309,9 @@ def main() -> None:
             should_eval = update == 1 or update == num_updates or update % args.eval_interval == 0
             eval_stats = EvalStats(float("nan"), float("nan"), float("nan"))
             if should_eval:
-                eval_stats = evaluate_policy(agent, args.eval_episodes, args.seed + 20_000 + update)
+                eval_stats = evaluate_policy(
+                    agent, args.eval_episodes, args.seed + 20_000 + update, args
+                )
                 if eval_stats.distance > best_eval_distance:
                     best_eval_distance = eval_stats.distance
                     save_checkpoint(best_checkpoint_path, agent, args, eval_stats)
@@ -324,7 +347,7 @@ def main() -> None:
                     f"entropy={row['entropy']:.3f}"
                 )
 
-    final_stats = evaluate_policy(agent, args.eval_episodes, args.seed + 30_000)
+    final_stats = evaluate_policy(agent, args.eval_episodes, args.seed + 30_000, args)
     save_checkpoint(checkpoint_path, agent, args, final_stats)
     print(
         "final_eval "
@@ -337,8 +360,12 @@ def main() -> None:
     print(f"metrics={log_path}")
 
 
-def evaluate_random(episodes: int, seed: int) -> EvalStats:
-    env = BramTripodEnv(randomize_reset=False)
+def evaluate_random(episodes: int, seed: int, args: argparse.Namespace) -> EvalStats:
+    env = BramTripodEnv(
+        randomize_reset=False,
+        randomize_command=args.randomize_command,
+        command_angle=None if args.randomize_command else np.deg2rad(args.command_angle_deg),
+    )
     rewards = []
     distances = []
     lengths = []
@@ -346,7 +373,7 @@ def evaluate_random(episodes: int, seed: int) -> EvalStats:
     for episode in range(episodes):
         obs, _ = env.reset(
             seed=seed + episode,
-            options={"command_angle": eval_command_angle(episode, episodes)},
+            options={"command_angle": eval_command_angle(episode, episodes, args)},
         )
         total_reward = 0.0
         final_info = {"command_distance": 0.0}
@@ -362,8 +389,17 @@ def evaluate_random(episodes: int, seed: int) -> EvalStats:
     return EvalStats(float(np.mean(rewards)), float(np.mean(distances)), float(np.mean(lengths)))
 
 
-def evaluate_policy(agent: ActorCritic, episodes: int, seed: int) -> EvalStats:
-    env = BramTripodEnv(randomize_reset=False)
+def evaluate_policy(
+    agent: ActorCritic,
+    episodes: int,
+    seed: int,
+    args: argparse.Namespace,
+) -> EvalStats:
+    env = BramTripodEnv(
+        randomize_reset=False,
+        randomize_command=args.randomize_command,
+        command_angle=None if args.randomize_command else np.deg2rad(args.command_angle_deg),
+    )
     rewards = []
     distances = []
     lengths = []
@@ -372,7 +408,7 @@ def evaluate_policy(agent: ActorCritic, episodes: int, seed: int) -> EvalStats:
         for episode in range(episodes):
             obs, _ = env.reset(
                 seed=seed + episode,
-                options={"command_angle": eval_command_angle(episode, episodes)},
+                options={"command_angle": eval_command_angle(episode, episodes, args)},
             )
             total_reward = 0.0
             final_info = {"command_distance": 0.0}
@@ -420,7 +456,13 @@ def distance_from_info(info: dict) -> float:
     return float(info.get("command_distance", info.get("x_distance", 0.0)))
 
 
-def eval_command_angle(episode: int, episodes: int) -> float:
+def eval_command_angle(
+    episode: int,
+    episodes: int,
+    args: argparse.Namespace,
+) -> float:
+    if not args.randomize_command:
+        return float(np.deg2rad(args.command_angle_deg))
     if episodes <= 1:
         return 0.0
     return float(2.0 * np.pi * episode / episodes)

@@ -23,7 +23,7 @@ SERVO_SPEED_SPEC = (
     (7.4, np.pi / 3.0 / 0.11),
     (8.4, np.pi / 3.0 / 0.10),
 )
-MAX_SERVO_TORQUE_NM = 2.5
+MAX_SERVO_TORQUE_NM = 3.0
 RATED_SERVO_TORQUE_NM_AT_8V4 = SERVO_TORQUE_SPEC[-1][1]
 MAX_SERVO_SPEED_RAD_S = SERVO_SPEED_SPEC[-1][1]
 
@@ -43,8 +43,9 @@ class BramTripodEnv(gym.Env):
     """Low-sensor MuJoCo env with sim-to-real randomization.
 
     The policy observes only signals that can exist on the robot:
-    6DOF IMU-derived values plus recent servo commands. Rewards still use
-    privileged simulator displacement because rewards are not deployed.
+    IMU-derived values, a heading-derived command vector, and recent servo
+    commands. Rewards still use privileged simulator displacement because
+    rewards are not deployed.
     """
 
     metadata = {"render_modes": []}
@@ -70,9 +71,7 @@ class BramTripodEnv(gym.Env):
         self.domain_randomization = (
             randomize_reset if domain_randomization is None else domain_randomization
         )
-        self.randomize_command = (
-            randomize_reset if randomize_command is None else randomize_command
-        )
+        self.randomize_command = False if randomize_command is None else randomize_command
         self.fixed_command_angle = command_angle
 
         self.chassis_id = self._body_id("chassis")
@@ -267,6 +266,13 @@ class BramTripodEnv(gym.Env):
             -self.command_direction_world[1] * world_velocity[0]
             + self.command_direction_world[0] * world_velocity[1]
         )
+        body_velocity = self._world_velocity_to_body(forward_velocity, lateral_velocity)
+        body_forward_velocity = float(body_velocity[0])
+        body_lateral_velocity = float(body_velocity[1])
+        heading_error = float(
+            np.arctan2(self.command_direction_body[1], self.command_direction_body[0])
+        )
+        heading_alignment = float(self.command_direction_body[0])
         displacement_world = np.array(
             [x_after - self.start_x, y_after - self.start_y], dtype=np.float32
         )
@@ -282,20 +288,26 @@ class BramTripodEnv(gym.Env):
         action_delta = action - self.previous_policy_action
 
         forward_reward = 5.0 * float(np.clip(command_velocity, -1.5, 2.5))
+        body_forward_reward = 0.8 * max(0.0, body_forward_velocity) * max(
+            0.0, heading_alignment
+        )
         alive_reward = 0.005 * max(0.0, upright)
         backward_penalty = 2.0 * max(0.0, -command_velocity)
         upright_penalty = 0.06 * max(0.0, 0.35 - upright)
-        sideways_penalty = 0.08 * abs(off_axis_velocity)
-        line_penalty = 0.35 * abs(self.cross_track_error)
-        ctrl_cost = 0.006 * float(np.mean(np.square(action)))
-        smoothness_cost = 0.008 * float(np.mean(np.square(action_delta)))
+        sideways_penalty = 0.045 * abs(body_lateral_velocity)
+        line_penalty = 0.04 * abs(self.cross_track_error)
+        heading_penalty = 0.020 * abs(heading_error)
+        ctrl_cost = 0.004 * float(np.mean(np.square(action)))
+        smoothness_cost = 0.004 * float(np.mean(np.square(action_delta)))
         reward = (
             forward_reward
+            + body_forward_reward
             + alive_reward
             - backward_penalty
             - upright_penalty
             - sideways_penalty
             - line_penalty
+            - heading_penalty
             - ctrl_cost
             - smoothness_cost
         )
@@ -319,6 +331,10 @@ class BramTripodEnv(gym.Env):
             "lateral_velocity": lateral_velocity,
             "command_velocity": command_velocity,
             "off_axis_velocity": off_axis_velocity,
+            "body_forward_velocity": body_forward_velocity,
+            "body_lateral_velocity": body_lateral_velocity,
+            "heading_error": heading_error,
+            "heading_alignment": heading_alignment,
             "height": height,
             "upright": upright,
             "voltage": self._current_voltage(),
@@ -328,11 +344,13 @@ class BramTripodEnv(gym.Env):
             "control_latency_steps": self.domain.control_latency_steps,
             "imu_latency_steps": self.domain.imu_latency_steps,
             "forward_reward": forward_reward,
+            "body_forward_reward": body_forward_reward,
             "alive_reward": alive_reward,
             "backward_penalty": backward_penalty,
             "upright_penalty": upright_penalty,
             "sideways_penalty": sideways_penalty,
             "line_penalty": line_penalty,
+            "heading_penalty": heading_penalty,
             "ctrl_cost": ctrl_cost,
             "smoothness_cost": smoothness_cost,
         }
@@ -372,36 +390,36 @@ class BramTripodEnv(gym.Env):
         if not active:
             return
 
-        self.domain.initial_voltage = float(self.np_random.uniform(7.2, 8.4))
-        drop = float(self.np_random.uniform(0.05, 0.75))
-        self.domain.final_voltage = max(6.2, self.domain.initial_voltage - drop)
-        self.domain.control_latency_steps = int(self.np_random.integers(0, 4))
-        self.domain.imu_latency_steps = int(self.np_random.integers(0, 4))
-        self.domain.floor_friction = float(self.np_random.uniform(0.55, 2.1))
-        self.domain.foot_friction = float(self.np_random.uniform(0.75, 2.4))
+        self.domain.initial_voltage = float(self.np_random.uniform(7.4, 8.4))
+        drop = float(self.np_random.uniform(0.0, 0.45))
+        self.domain.final_voltage = max(6.8, self.domain.initial_voltage - drop)
+        self.domain.control_latency_steps = int(self.np_random.integers(0, 3))
+        self.domain.imu_latency_steps = int(self.np_random.integers(0, 3))
+        self.domain.floor_friction = float(self.np_random.uniform(0.80, 1.80))
+        self.domain.foot_friction = float(self.np_random.uniform(1.00, 2.20))
 
-        self.servo_zero_offset[:] = self.np_random.normal(0.0, 0.035, self.model.nu)
-        self.servo_gain[:] = self.np_random.uniform(0.92, 1.08, self.model.nu)
-        self.servo_strength[:] = self.np_random.uniform(0.50, 1.00, self.model.nu)
+        self.servo_zero_offset[:] = self.np_random.normal(0.0, 0.025, self.model.nu)
+        self.servo_gain[:] = self.np_random.uniform(0.95, 1.05, self.model.nu)
+        self.servo_strength[:] = self.np_random.uniform(0.70, 1.00, self.model.nu)
         self.servo_speed[:] = MAX_SERVO_SPEED_RAD_S * self.np_random.uniform(
-            0.65, 1.00, self.model.nu
+            0.75, 1.00, self.model.nu
         )
-        self.servo_deadband[:] = self.np_random.uniform(0.003, 0.020, self.model.nu)
+        self.servo_deadband[:] = self.np_random.uniform(0.002, 0.012, self.model.nu)
         self.servo_quantization[:] = self.np_random.uniform(
-            0.0008, 0.006, self.model.nu
+            0.0005, 0.004, self.model.nu
         )
         self.servo_time_constant[:] = self.np_random.uniform(
-            0.018, 0.075, self.model.nu
+            0.015, 0.055, self.model.nu
         )
 
-        self.gyro_bias[:] = self.np_random.normal(0.0, 0.035, 3)
-        self.accel_bias_g[:] = self.np_random.normal(0.0, 0.025, 3)
-        self.gyro_noise_std = float(self.np_random.uniform(0.006, 0.035))
-        self.accel_noise_std_g = float(self.np_random.uniform(0.010, 0.055))
-        self.gravity_noise_std = float(self.np_random.uniform(0.006, 0.030))
-        self.gyro_bias_walk_std = float(self.np_random.uniform(0.0002, 0.0015))
-        self.accel_bias_walk_std_g = float(self.np_random.uniform(0.0001, 0.0008))
-        self.gravity_filter_alpha = float(self.np_random.uniform(0.035, 0.12))
+        self.gyro_bias[:] = self.np_random.normal(0.0, 0.020, 3)
+        self.accel_bias_g[:] = self.np_random.normal(0.0, 0.015, 3)
+        self.gyro_noise_std = float(self.np_random.uniform(0.004, 0.020))
+        self.accel_noise_std_g = float(self.np_random.uniform(0.008, 0.035))
+        self.gravity_noise_std = float(self.np_random.uniform(0.004, 0.020))
+        self.gyro_bias_walk_std = float(self.np_random.uniform(0.0001, 0.0008))
+        self.accel_bias_walk_std_g = float(self.np_random.uniform(0.00005, 0.00045))
+        self.gravity_filter_alpha = float(self.np_random.uniform(0.05, 0.14))
 
     def _apply_domain_to_model(self) -> None:
         if not self.domain.active:
@@ -416,23 +434,23 @@ class BramTripodEnv(gym.Env):
         ]
         for geom_id in self.foot_geom_ids:
             torsional = float(self.np_random.uniform(0.03, 0.16))
-            rolling = float(self.np_random.uniform(0.003, 0.035))
+            rolling = float(self.np_random.uniform(0.003, 0.025))
             self.model.geom_friction[geom_id] = [
                 self.domain.foot_friction,
                 torsional,
                 rolling,
             ]
             self.model.geom_size[geom_id, 0] *= float(
-                self.np_random.uniform(0.80, 1.25)
+                self.np_random.uniform(0.90, 1.15)
             )
         for geom_id in self.leg_geom_ids:
             self.model.geom_friction[geom_id] = [
-                float(self.np_random.uniform(0.7, 1.8)),
-                float(self.np_random.uniform(0.015, 0.08)),
-                float(self.np_random.uniform(0.002, 0.018)),
+                float(self.np_random.uniform(0.85, 1.55)),
+                float(self.np_random.uniform(0.015, 0.06)),
+                float(self.np_random.uniform(0.002, 0.014)),
             ]
 
-        slope = float(self.np_random.uniform(0.0, np.deg2rad(5.0)))
+        slope = float(self.np_random.uniform(0.0, np.deg2rad(3.0)))
         heading = float(self.np_random.uniform(-np.pi, np.pi))
         self.model.opt.gravity[:] = STANDARD_GRAVITY * np.array(
             [
@@ -442,16 +460,16 @@ class BramTripodEnv(gym.Env):
             ]
         )
 
-        chassis_scale = float(self.np_random.uniform(0.85, 1.22))
+        chassis_scale = float(self.np_random.uniform(0.90, 1.15))
         self._scale_body_mass(self.chassis_id, chassis_scale)
         for body_id in self.leg_body_ids:
-            self._scale_body_mass(body_id, float(self.np_random.uniform(0.80, 1.35)))
-            self.model.body_pos[body_id, :2] += self.np_random.normal(0.0, 0.0018, 2)
-            self.model.body_pos[body_id, 2] += float(self.np_random.normal(0.0, 0.0008))
+            self._scale_body_mass(body_id, float(self.np_random.uniform(0.90, 1.20)))
+            self.model.body_pos[body_id, :2] += self.np_random.normal(0.0, 0.0010, 2)
+            self.model.body_pos[body_id, 2] += float(self.np_random.normal(0.0, 0.0005))
 
         for joint_id in self.hinge_joint_ids:
             dof_addr = int(self.model.jnt_dofadr[joint_id])
-            self.model.dof_damping[dof_addr] *= float(self.np_random.uniform(0.6, 1.7))
+            self.model.dof_damping[dof_addr] *= float(self.np_random.uniform(0.8, 1.3))
 
     def _restore_model_parameters(self) -> None:
         self.model.opt.gravity[:] = self.base_gravity

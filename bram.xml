@@ -1,6 +1,10 @@
 <mujoco model="bram_exact_triangle_tripod">
-  <compiler angle="radian" autolimits="true" />
 
+<visual>
+       <global glow="0.5" />
+       <headlight active="1" diffuse="0.9 0.9 0.9" ambient="0.6 0.6 0.6" />
+   </visual>
+  <compiler angle="radian" autolimits="true" />
   <option timestep="0.002" gravity="0 0 -9.81" />
 
   <default>
@@ -22,8 +26,8 @@
       Thickness: 0.025400 m
     -->
     <mesh
-      name="triangle_chassis_mesh"
-      vertex="
+            name="triangle_chassis_mesh"
+            vertex="
         0.10998523 0.00000000 -0.01270000
         -0.05499261 0.09525000 -0.01270000
         -0.05499261 -0.09525000 -0.01270000
@@ -31,7 +35,7 @@
         -0.05499261 0.09525000 0.01270000
         -0.05499261 -0.09525000 0.01270000
       "
-      face="
+            face="
         0 2 1
         3 4 5
         0 1 4
@@ -41,20 +45,25 @@
         2 0 3
         2 3 5
       "
-    />
+        />
   </asset>
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" />
-    <camera name="track" mode="trackcom" pos="0.45 -0.45 0.30" xyaxes="1 1 0 -0.3 0.3 1" />
+    <camera
+            name="track"
+            mode="trackcom"
+            pos="0.45 -0.45 0.30"
+            xyaxes="1 1 0 -0.3 0.3 1"
+        />
 
     <geom
-      name="floor"
-      type="plane"
-      size="3 3 0.05"
-      friction="1.0 0.005 0.0001"
-      rgba="0.78 0.78 0.76 1"
-    />
+            name="floor"
+            type="plane"
+            size="3 3 0.05"
+            friction="1.0 0.005 0.0001"
+            rgba="0.78 0.78 0.76 1"
+        />
 
     <!--
       +X is the front triangle tip.
@@ -72,115 +81,142 @@
       <site name="imu_site" pos="0 0 0.025" size="0.006" rgba="1 0 0 1" />
 
       <geom
-        name="chassis_triangle"
-        type="mesh"
-        mesh="triangle_chassis_mesh"
-        mass="0.110"
-        material="print_blue"
-      />
+                name="chassis_triangle"
+                type="mesh"
+                mesh="triangle_chassis_mesh"
+                mass="0.110"
+                material="print_blue"
+            />
 
       <geom
-        name="battery"
-        type="box"
-        pos="0.000 0.000 0.0217"
-        size="0.028 0.012 0.009"
-        mass="0.057"
-        material="battery_blue"
-      />
+                name="battery"
+                type="box"
+                pos="0.000 0.000 0.0217"
+                size="0.028 0.012 0.009"
+                mass="0.057"
+                material="battery_blue"
+            />
 
       <!-- Simplified servo masses: one hinge cylinder at each pivot. -->
       <geom
-        name="servo_front"
-        type="cylinder"
-        fromto="0.11155642 0.03259235 0 0.09755642 0.00834363 0"
-        size="0.012"
-        mass="0.070"
-        material="servo_black"
-      />
+                name="servo_front"
+                type="cylinder"
+                fromto="0.11155642 0.03259235 0 0.09755642 0.00834363 0"
+                size="0.012"
+                mass="0.070"
+                material="servo_black"
+            />
       <geom
-        name="servo_back_left"
-        type="cylinder"
-        fromto="-0.08400401 0.08031452 0 -0.05600401 0.08031452 0"
-        size="0.012"
-        mass="0.070"
-        material="servo_black"
-      />
+                name="servo_back_left"
+                type="cylinder"
+                fromto="-0.08400401 0.08031452 0 -0.05600401 0.08031452 0"
+                size="0.012"
+                mass="0.070"
+                material="servo_black"
+            />
       <geom
-        name="servo_back_right"
-        type="cylinder"
-        fromto="-0.02755241 -0.11290687 0 -0.04155241 -0.08865815 0"
-        size="0.012"
-        mass="0.070"
-        material="servo_black"
-      />
+                name="servo_back_right"
+                type="cylinder"
+                fromto="-0.02755241 -0.11290687 0 -0.04155241 -0.08865815 0"
+                size="0.012"
+                mass="0.070"
+                material="servo_black"
+            />
 
-      <body name="leg_front" pos="0.10455642 0.02046799 0" euler="0 0 2.61799387799">
-        <joint name="hip_front" type="hinge" axis="0 1 0" range="-0.75 0.75" />
+      <body
+                name="leg_front"
+                pos="0.10455642 0.02046799 0"
+                euler="0 0 2.61799387799"
+            >
+        <joint
+                    name="hip_front"
+                    type="hinge"
+                    axis="0 1 0"
+                    range="-1.3962634 1.3962634"
+                />
         <geom
-          name="front_leg_tube"
-          type="capsule"
-          fromto="0 0 0 -0.136 0 -0.063"
-          size="0.0047625"
-          mass="0.011"
-          friction="1.2 0.04 0.005"
-          material="carbon"
-        />
+                    name="front_leg_tube"
+                    type="capsule"
+                    fromto="0 0 0 -0.136 0 -0.063"
+                    size="0.0047625"
+                    mass="0.011"
+                    friction="1.2 0.04 0.005"
+                    material="carbon"
+                />
         <geom
-          name="front_rubber_tip"
-          type="cylinder"
-          fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
-          size="0.0065"
-          mass="0.003"
-          condim="4"
-          friction="1.7 0.08 0.01"
-          material="carbon"
-        />
+                    name="front_rubber_tip"
+                    type="cylinder"
+                    fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+                    size="0.0065"
+                    mass="0.003"
+                    condim="4"
+                    friction="1.7 0.08 0.01"
+                    material="carbon"
+                />
       </body>
 
-      <body name="leg_back_left" pos="-0.07000401 0.08031452 0" euler="0 0 -1.57079632679">
-        <joint name="hip_back_left" type="hinge" axis="0 1 0" range="-0.75 0.75" />
+      <body
+                name="leg_back_left"
+                pos="-0.07000401 0.08031452 0"
+                euler="0 0 -1.57079632679"
+            >
+        <joint
+                    name="hip_back_left"
+                    type="hinge"
+                    axis="0 1 0"
+                    range="-1.3962634 1.3962634"
+                />
         <geom
-          name="back_left_leg_tube"
-          type="capsule"
-          fromto="0 0 0 -0.136 0 -0.063"
-          size="0.0047625"
-          mass="0.011"
-          friction="1.2 0.04 0.005"
-          material="carbon"
-        />
+                    name="back_left_leg_tube"
+                    type="capsule"
+                    fromto="0 0 0 -0.136 0 -0.063"
+                    size="0.0047625"
+                    mass="0.011"
+                    friction="1.2 0.04 0.005"
+                    material="carbon"
+                />
         <geom
-          name="back_left_rubber_tip"
-          type="cylinder"
-          fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
-          size="0.0065"
-          mass="0.003"
-          condim="4"
-          friction="1.7 0.08 0.01"
-          material="carbon"
-        />
+                    name="back_left_rubber_tip"
+                    type="cylinder"
+                    fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+                    size="0.0065"
+                    mass="0.003"
+                    condim="4"
+                    friction="1.7 0.08 0.01"
+                    material="carbon"
+                />
       </body>
 
-      <body name="leg_back_right" pos="-0.03455241 -0.10078251 0" euler="0 0 0.52359877560">
-        <joint name="hip_back_right" type="hinge" axis="0 1 0" range="-0.75 0.75" />
+      <body
+                name="leg_back_right"
+                pos="-0.03455241 -0.10078251 0"
+                euler="0 0 0.52359877560"
+            >
+        <joint
+                    name="hip_back_right"
+                    type="hinge"
+                    axis="0 1 0"
+                    range="-1.3962634 1.3962634"
+                />
         <geom
-          name="back_right_leg_tube"
-          type="capsule"
-          fromto="0 0 0 -0.158 0 -0.063"
-          size="0.0047625"
-          mass="0.012"
-          friction="1.2 0.04 0.005"
-          material="carbon"
-        />
+                    name="back_right_leg_tube"
+                    type="capsule"
+                    fromto="0 0 0 -0.158 0 -0.063"
+                    size="0.0047625"
+                    mass="0.012"
+                    friction="1.2 0.04 0.005"
+                    material="carbon"
+                />
         <geom
-          name="back_right_rubber_tip"
-          type="cylinder"
-          fromto="-0.14685342 0 -0.05855547 -0.16914658 0 -0.06744453"
-          size="0.0065"
-          mass="0.003"
-          condim="4"
-          friction="1.7 0.08 0.01"
-          material="carbon"
-        />
+                    name="back_right_rubber_tip"
+                    type="cylinder"
+                    fromto="-0.14685342 0 -0.05855547 -0.16914658 0 -0.06744453"
+                    size="0.0065"
+                    mass="0.003"
+                    condim="4"
+                    friction="1.7 0.08 0.01"
+                    material="carbon"
+                />
       </body>
     </body>
   </worldbody>
@@ -193,26 +229,26 @@
 
   <actuator>
     <position
-      name="servo_front"
-      joint="hip_front"
-      kp="18"
-      ctrlrange="-0.75 0.75"
-      forcerange="-2.5 2.5"
-    />
+            name="servo_front"
+            joint="hip_front"
+            kp="18"
+            ctrlrange="-1.3962634 1.3962634"
+            forcerange="-3.0 3.0"
+        />
     <position
-      name="servo_back_left"
-      joint="hip_back_left"
-      kp="18"
-      ctrlrange="-0.75 0.75"
-      forcerange="-2.5 2.5"
-    />
+            name="servo_back_left"
+            joint="hip_back_left"
+            kp="18"
+            ctrlrange="-1.3962634 1.3962634"
+            forcerange="-3.0 3.0"
+        />
     <position
-      name="servo_back_right"
-      joint="hip_back_right"
-      kp="18"
-      ctrlrange="-0.75 0.75"
-      forcerange="-2.5 2.5"
-    />
+            name="servo_back_right"
+            joint="hip_back_right"
+            kp="18"
+            ctrlrange="-1.3962634 1.3962634"
+            forcerange="-3.0 3.0"
+        />
   </actuator>
 
   <sensor>
