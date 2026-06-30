@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bram"
+version = "0.1.0"
+description = "MuJoCo tripod robot sandbox"
+readme = "readme.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium",
+    "mujoco",
+    "numpy",
+]
+
+[project.optional-dependencies]
+rl = [
+    "gymnasium<=0.29.1",
+    "numpy<2",
+    "pufferlib",
+]
+
+[tool.setuptools]
+py-modules = ["bram_env"]

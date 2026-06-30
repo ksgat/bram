@@ -1,0 +1,223 @@
+<mujoco model="bram_exact_triangle_tripod">
+  <compiler angle="radian" autolimits="true" />
+
+  <option timestep="0.002" gravity="0 0 -9.81" />
+
+  <default>
+    <joint damping="0.12" armature="0.001" />
+    <geom solref="0.01 1" solimp="0.9 0.95 0.001" />
+  </default>
+
+  <asset>
+    <material name="print_blue" rgba="0.16 0.48 0.84 1" />
+    <material name="servo_black" rgba="0.05 0.055 0.06 1" />
+    <material name="horn_gray" rgba="0.70 0.72 0.74 1" />
+    <material name="carbon" rgba="0.01 0.01 0.01 1" />
+    <material name="battery_blue" rgba="0.20 0.58 0.92 1" />
+
+    <!--
+      7.5 in equilateral triangular prism centered at the chassis body frame.
+      Side length: 0.190500 m
+      Circumradius: 0.109985 m
+      Thickness: 0.025400 m
+    -->
+    <mesh
+      name="triangle_chassis_mesh"
+      vertex="
+        0.10998523 0.00000000 -0.01270000
+        -0.05499261 0.09525000 -0.01270000
+        -0.05499261 -0.09525000 -0.01270000
+        0.10998523 0.00000000 0.01270000
+        -0.05499261 0.09525000 0.01270000
+        -0.05499261 -0.09525000 0.01270000
+      "
+      face="
+        0 2 1
+        3 4 5
+        0 1 4
+        0 4 3
+        1 2 5
+        1 5 4
+        2 0 3
+        2 3 5
+      "
+    />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" />
+    <camera name="track" mode="trackcom" pos="0.45 -0.45 0.30" xyaxes="1 1 0 -0.3 0.3 1" />
+
+    <geom
+      name="floor"
+      type="plane"
+      size="3 3 0.05"
+      friction="1.0 0.005 0.0001"
+      rgba="0.78 0.78 0.76 1"
+    />
+
+    <!--
+      +X is the front triangle tip.
+      +Y is robot left.
+      Hip origins are the servo output shaft centers.
+
+      Measurements from the physical layout:
+      triangle side = 7.5 in = 0.190500 m
+      shaft along-side offset = 0.588011 in = 0.01493548 m
+      shaft outward offset = 0.591 in = 0.01501140 m
+    -->
+    <body name="chassis" pos="0 0 0.075">
+      <freejoint />
+
+      <site name="imu_site" pos="0 0 0.025" size="0.006" rgba="1 0 0 1" />
+
+      <geom
+        name="chassis_triangle"
+        type="mesh"
+        mesh="triangle_chassis_mesh"
+        mass="0.110"
+        material="print_blue"
+      />
+
+      <geom
+        name="battery"
+        type="box"
+        pos="0.000 0.000 0.0217"
+        size="0.028 0.012 0.009"
+        mass="0.057"
+        material="battery_blue"
+      />
+
+      <!-- Simplified servo masses: one hinge cylinder at each pivot. -->
+      <geom
+        name="servo_front"
+        type="cylinder"
+        fromto="0.11155642 0.03259235 0 0.09755642 0.00834363 0"
+        size="0.012"
+        mass="0.070"
+        material="servo_black"
+      />
+      <geom
+        name="servo_back_left"
+        type="cylinder"
+        fromto="-0.08400401 0.08031452 0 -0.05600401 0.08031452 0"
+        size="0.012"
+        mass="0.070"
+        material="servo_black"
+      />
+      <geom
+        name="servo_back_right"
+        type="cylinder"
+        fromto="-0.02755241 -0.11290687 0 -0.04155241 -0.08865815 0"
+        size="0.012"
+        mass="0.070"
+        material="servo_black"
+      />
+
+      <body name="leg_front" pos="0.10455642 0.02046799 0" euler="0 0 2.61799387799">
+        <joint name="hip_front" type="hinge" axis="0 1 0" range="-0.75 0.75" />
+        <geom
+          name="front_leg_tube"
+          type="capsule"
+          fromto="0 0 0 -0.136 0 -0.063"
+          size="0.0047625"
+          mass="0.011"
+          friction="1.2 0.04 0.005"
+          material="carbon"
+        />
+        <geom
+          name="front_rubber_tip"
+          type="cylinder"
+          fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+          size="0.0065"
+          mass="0.003"
+          condim="4"
+          friction="1.7 0.08 0.01"
+          material="carbon"
+        />
+      </body>
+
+      <body name="leg_back_left" pos="-0.07000401 0.08031452 0" euler="0 0 -1.57079632679">
+        <joint name="hip_back_left" type="hinge" axis="0 1 0" range="-0.75 0.75" />
+        <geom
+          name="back_left_leg_tube"
+          type="capsule"
+          fromto="0 0 0 -0.136 0 -0.063"
+          size="0.0047625"
+          mass="0.011"
+          friction="1.2 0.04 0.005"
+          material="carbon"
+        />
+        <geom
+          name="back_left_rubber_tip"
+          type="cylinder"
+          fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+          size="0.0065"
+          mass="0.003"
+          condim="4"
+          friction="1.7 0.08 0.01"
+          material="carbon"
+        />
+      </body>
+
+      <body name="leg_back_right" pos="-0.03455241 -0.10078251 0" euler="0 0 0.52359877560">
+        <joint name="hip_back_right" type="hinge" axis="0 1 0" range="-0.75 0.75" />
+        <geom
+          name="back_right_leg_tube"
+          type="capsule"
+          fromto="0 0 0 -0.158 0 -0.063"
+          size="0.0047625"
+          mass="0.012"
+          friction="1.2 0.04 0.005"
+          material="carbon"
+        />
+        <geom
+          name="back_right_rubber_tip"
+          type="cylinder"
+          fromto="-0.14685342 0 -0.05855547 -0.16914658 0 -0.06744453"
+          size="0.0065"
+          mass="0.003"
+          condim="4"
+          friction="1.7 0.08 0.01"
+          material="carbon"
+        />
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <exclude body1="chassis" body2="leg_front" />
+    <exclude body1="chassis" body2="leg_back_left" />
+    <exclude body1="chassis" body2="leg_back_right" />
+  </contact>
+
+  <actuator>
+    <position
+      name="servo_front"
+      joint="hip_front"
+      kp="18"
+      ctrlrange="-0.75 0.75"
+      forcerange="-3.0 3.0"
+    />
+    <position
+      name="servo_back_left"
+      joint="hip_back_left"
+      kp="18"
+      ctrlrange="-0.75 0.75"
+      forcerange="-3.0 3.0"
+    />
+    <position
+      name="servo_back_right"
+      joint="hip_back_right"
+      kp="18"
+      ctrlrange="-0.75 0.75"
+      forcerange="-3.0 3.0"
+    />
+  </actuator>
+
+  <sensor>
+    <gyro name="gyro" site="imu_site" />
+    <accelerometer name="accel" site="imu_site" />
+    <framequat name="orientation" objtype="site" objname="imu_site" />
+  </sensor>
+</mujoco>

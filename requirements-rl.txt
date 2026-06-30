@@ -1,0 +1,4 @@
+-r requirements.txt
+gymnasium<=0.29.1
+numpy<2
+pufferlib
