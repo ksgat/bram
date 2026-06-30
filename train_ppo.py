@@ -25,6 +25,9 @@ class EvalStats:
 class ActorCritic(nn.Module):
     def __init__(self, obs_dim: int, action_dim: int, hidden_size: int) -> None:
         super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.hidden_size = hidden_size
         self.actor = nn.Sequential(
             layer_init(nn.Linear(obs_dim, hidden_size)),
             nn.Tanh(),
@@ -187,7 +190,7 @@ def main() -> None:
 
                     if done:
                         recent_returns.append(float(episode_returns[env_index]))
-                        recent_distances.append(float(info.get("x_distance", 0.0)))
+                        recent_distances.append(distance_from_info(info))
                         recent_lengths.append(int(episode_lengths[env_index]))
                         episode_returns[env_index] = 0.0
                         episode_lengths[env_index] = 0
@@ -311,12 +314,13 @@ def main() -> None:
             log_file.flush()
 
             if update == 1 or update == num_updates or update % 10 == 0 or should_eval:
+                eval_dist = f"{row['eval_distance']:.4f}" if should_eval else "skip"
                 print(
                     f"update={update:04d}/{num_updates} "
                     f"step={global_step} sps={sps} "
                     f"recent_return={row['recent_return']:.3f} "
                     f"recent_dist={row['recent_distance']:.4f} "
-                    f"eval_dist={row['eval_distance']:.4f} "
+                    f"eval_dist={eval_dist} "
                     f"entropy={row['entropy']:.3f}"
                 )
 
@@ -340,9 +344,12 @@ def evaluate_random(episodes: int, seed: int) -> EvalStats:
     lengths = []
     rng = np.random.default_rng(seed)
     for episode in range(episodes):
-        obs, _ = env.reset(seed=seed + episode)
+        obs, _ = env.reset(
+            seed=seed + episode,
+            options={"command_angle": eval_command_angle(episode, episodes)},
+        )
         total_reward = 0.0
-        final_info = {"x_distance": 0.0}
+        final_info = {"command_distance": 0.0}
         for length in range(env.max_steps):
             action = rng.uniform(-1.0, 1.0, size=env.action_space.shape).astype(np.float32)
             obs, reward, terminated, truncated, final_info = env.step(action)
@@ -350,7 +357,7 @@ def evaluate_random(episodes: int, seed: int) -> EvalStats:
             if terminated or truncated:
                 break
         rewards.append(total_reward)
-        distances.append(float(final_info.get("x_distance", 0.0)))
+        distances.append(distance_from_info(final_info))
         lengths.append(length + 1)
     return EvalStats(float(np.mean(rewards)), float(np.mean(distances)), float(np.mean(lengths)))
 
@@ -363,9 +370,12 @@ def evaluate_policy(agent: ActorCritic, episodes: int, seed: int) -> EvalStats:
     agent.eval()
     with torch.no_grad():
         for episode in range(episodes):
-            obs, _ = env.reset(seed=seed + episode)
+            obs, _ = env.reset(
+                seed=seed + episode,
+                options={"command_angle": eval_command_angle(episode, episodes)},
+            )
             total_reward = 0.0
-            final_info = {"x_distance": 0.0}
+            final_info = {"command_distance": 0.0}
             for length in range(env.max_steps):
                 obs_tensor = torch.as_tensor(obs[None, :], dtype=torch.float32)
                 action = agent.deterministic_action(obs_tensor).cpu().numpy()[0]
@@ -374,7 +384,7 @@ def evaluate_policy(agent: ActorCritic, episodes: int, seed: int) -> EvalStats:
                 if terminated or truncated:
                     break
             rewards.append(total_reward)
-            distances.append(float(final_info.get("x_distance", 0.0)))
+            distances.append(distance_from_info(final_info))
             lengths.append(length + 1)
     agent.train()
     return EvalStats(float(np.mean(rewards)), float(np.mean(distances)), float(np.mean(lengths)))
@@ -390,6 +400,8 @@ def save_checkpoint(
         {
             "model_state_dict": agent.state_dict(),
             "args": vars(args),
+            "obs_dim": agent.obs_dim,
+            "action_dim": agent.action_dim,
             "eval_reward": eval_stats.reward,
             "eval_distance": eval_stats.distance,
             "eval_length": eval_stats.length,
@@ -402,6 +414,16 @@ def mean_or_nan(values: deque[float] | deque[int]) -> float:
     if not values:
         return float("nan")
     return float(np.mean(values))
+
+
+def distance_from_info(info: dict) -> float:
+    return float(info.get("command_distance", info.get("x_distance", 0.0)))
+
+
+def eval_command_angle(episode: int, episodes: int) -> float:
+    if episodes <= 1:
+        return 0.0
+    return float(2.0 * np.pi * episode / episodes)
 
 
 if __name__ == "__main__":

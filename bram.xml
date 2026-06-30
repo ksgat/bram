@@ -197,21 +197,21 @@
       joint="hip_front"
       kp="18"
       ctrlrange="-0.75 0.75"
-      forcerange="-3.0 3.0"
+      forcerange="-2.5 2.5"
     />
     <position
       name="servo_back_left"
       joint="hip_back_left"
       kp="18"
       ctrlrange="-0.75 0.75"
-      forcerange="-3.0 3.0"
+      forcerange="-2.5 2.5"
     />
     <position
       name="servo_back_right"
       joint="hip_back_right"
       kp="18"
       ctrlrange="-0.75 0.75"
-      forcerange="-3.0 3.0"
+      forcerange="-2.5 2.5"
     />
   </actuator>
 

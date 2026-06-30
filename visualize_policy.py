@@ -20,13 +20,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--speed", type=float, default=1.0)
+    parser.add_argument("--command-angle-deg", type=float, default=0.0)
+    parser.add_argument("--random-command", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     checkpoint = args.checkpoint or latest_checkpoint()
-    env = BramTripodEnv(randomize_reset=False)
+    command_angle = None if args.random_command else np.deg2rad(args.command_angle_deg)
+    env = BramTripodEnv(
+        randomize_reset=False,
+        randomize_command=args.random_command,
+        command_angle=command_angle,
+    )
     agent = load_agent(checkpoint, env)
     print(f"checkpoint={checkpoint}")
 
@@ -35,7 +42,7 @@ def main() -> None:
         print(
             f"episodes={args.episodes} "
             f"mean_reward={stats['reward']:.3f} "
-            f"mean_distance={stats['distance']:.4f} "
+            f"mean_command_distance={stats['distance']:.4f} "
             f"mean_length={stats['length']:.1f}"
         )
         return
@@ -58,6 +65,14 @@ def load_agent(checkpoint: Path, env: BramTripodEnv) -> ActorCritic:
     hidden_size = int(payload.get("args", {}).get("hidden_size", 64))
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    checkpoint_obs_dim, checkpoint_action_dim = checkpoint_dims(payload)
+    if (checkpoint_obs_dim, checkpoint_action_dim) != (obs_dim, action_dim):
+        raise ValueError(
+            f"{checkpoint} was trained for obs_dim={checkpoint_obs_dim}, "
+            f"action_dim={checkpoint_action_dim}, but the current env is "
+            f"obs_dim={obs_dim}, action_dim={action_dim}. Retrain after the "
+            "environment rewrite before visualizing this policy."
+        )
     agent = ActorCritic(obs_dim, action_dim, hidden_size)
     agent.load_state_dict(payload["model_state_dict"])
     agent.eval()
@@ -68,6 +83,16 @@ def load_agent(checkpoint: Path, env: BramTripodEnv) -> ActorCritic:
         f"length={payload.get('eval_length', float('nan')):.1f}"
     )
     return agent
+
+
+def checkpoint_dims(payload: dict) -> tuple[int, int]:
+    if "obs_dim" in payload and "action_dim" in payload:
+        return int(payload["obs_dim"]), int(payload["action_dim"])
+
+    state_dict = payload["model_state_dict"]
+    actor_input = state_dict["actor.0.weight"]
+    actor_output = state_dict["actor.4.weight"]
+    return int(actor_input.shape[1]), int(actor_output.shape[0])
 
 
 def run_headless(
@@ -81,7 +106,7 @@ def run_headless(
     for episode in range(args.episodes):
         _, total_reward, final_info, length = rollout_episode(env, agent, args, args.seed + episode)
         rewards.append(total_reward)
-        distances.append(float(final_info.get("x_distance", 0.0)))
+        distances.append(distance_from_info(final_info))
         lengths.append(length)
     return {
         "reward": float(np.mean(rewards)),
@@ -110,7 +135,8 @@ def run_viewer(env: BramTripodEnv, agent: ActorCritic, args: argparse.Namespace)
                 print(
                     f"episode={episode} "
                     f"reward={total_reward:.3f} "
-                    f"distance={info.get('x_distance', 0.0):.4f} "
+                    f"command_distance={distance_from_info(info):.4f} "
+                    f"command_angle_deg={np.rad2deg(info.get('command_angle', 0.0)):.1f} "
                     f"length={env.steps}"
                 )
                 episode += 1
@@ -136,7 +162,7 @@ def rollout_episode(
 ) -> tuple[np.ndarray, float, dict[str, float], int]:
     obs, _ = env.reset(seed=seed)
     total_reward = 0.0
-    final_info = {"x_distance": 0.0}
+    final_info = {"command_distance": 0.0}
     for length in range(1, env.max_steps + 1):
         action = policy_action(agent, obs, args.stochastic)
         obs, reward, terminated, truncated, final_info = env.step(action)
@@ -154,6 +180,10 @@ def policy_action(agent: ActorCritic, obs: np.ndarray, stochastic: bool) -> np.n
         else:
             action = agent.deterministic_action(obs_tensor)
     return action.cpu().numpy()[0].astype(np.float32)
+
+
+def distance_from_info(info: dict) -> float:
+    return float(info.get("command_distance", info.get("x_distance", 0.0)))
 
 
 def configure_viewer_visuals(viewer) -> None:
