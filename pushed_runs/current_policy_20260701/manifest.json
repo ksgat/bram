@@ -1,0 +1,19 @@
+{
+  "name": "bram_current_policy_20260701",
+  "date": "2026-07-01",
+  "status": "reviewable primitives; mixed arcs not final",
+  "controller": "exact component controller",
+  "assets": {
+    "forward_gait": "gaits/forward_best_params.json",
+    "backward_gait": "gaits/backward_best_params.json",
+    "yaw_left_table": "yaw_tables/yaw_left_policy_table.json",
+    "yaw_right_table": "yaw_tables/yaw_right_policy_table.json",
+    "experimental_cpg_modulator": "experimental_cpg_modulator/cpg_modulator.pt"
+  },
+  "notes": [
+    "Forward/back use deterministic CPG gaits.",
+    "Pure yaw uses exported PPO action tables.",
+    "The learned CPG-modulator checkpoint is experimental and currently underperforms the exact yaw tables.",
+    "Mixed forward+yaw commands still need a real blending/fine-tuning pass."
+  ]
+}

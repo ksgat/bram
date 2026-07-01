@@ -397,3 +397,20 @@ misc hardware (M3 hardware kit): 15
 
 - Short fine-tune barely improved it.
   `runs/ppo_yaw_left_planar_v2_finetune/ppo_20260701_115304/policy_best.pt` reaches about `0.433` command progress, or about `4.33 rad` over 8 seconds, but still drifts about `17 cm`; this is real yaw but not yet a clean primitive.
+
+7/1 CPG-modulator policy attempt
+
+- Added a CPG-modulator training/view script.
+  `train_cpg_modulator.py` trains a single command-conditioned controller where forward/back are deterministic CPG carriers and yaw is learned as gated CPG parameter/action modulation.
+
+- Exported the 300k left-yaw PPO teacher.
+  `runs/policy_table_yaw_left_planar_300k_8s/yaw-left_policy_table.json` replays about `4.62 rad` of real left yaw over 8 seconds.
+
+- Found the previous backward default was stale.
+  `runs/gait_search_backward_heading_refine` now moves the wrong way under the current model; `runs/gait_search_backward_rough` still moves backward about `0.90 m` over 8 seconds and is now the modulator script default.
+
+- CPG-param NN compression is not good enough yet.
+  Runs `cpg_param_v1` through `v4` reduce action clone error, but the learned approximation loses too much yaw authority; v4 only reaches about `2.31 rad` left yaw versus the exact teacher's `4.62 rad`.
+
+- Exact component-controller review mode works for primitives, not arcs.
+  `train_cpg_modulator.py --teacher-controller` runs exact forward/back CPG plus exact yaw tables; idle, forward, full backward, and pure yaw are reviewable, but naive mixed forward+yaw blending still terminates or underperforms.
