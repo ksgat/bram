@@ -263,3 +263,29 @@ misc hardware (M3 hardware kit): 15
 
 - Best mirrored yaw-left result.
   `runs/policy_table_yaw_left_mirror/yaw-left_mirrored_table.json` gets about `0.98 rad` in 4 seconds with about `13 cm` planar drift; this is cleaner than the bad yaw-left PPO table but far weaker than yaw-right.
+
+6/30 hybrid CPG + learned residual BC
+
+- Added BC hybrid controller.
+  `train_hybrid_bc.py` keeps deterministic CPG forward/back as the base action and trains a small residual network that is hard-gated by yaw command, so pure forward/back and idle cannot be modified by the learned layer.
+
+- First obs-based residual was too weak.
+  `runs/hybrid_bc_merged_v1` fit the dataset but yaw collapsed in rollout, likely because small action errors changed the env observations the residual depended on.
+
+- Switched to phase/command residual features.
+  The better version uses command, base action, previous action, and phase harmonics instead of full IMU/env obs, making the learned yaw residual behave like a compact learned waveform.
+
+- Current BC baseline.
+  `runs/hybrid_bc_phase_v2/hybrid_bc_current.pt` completes the command suite with no terminations: forward `0.408 m`, backward `0.795 m`, yaw-left `5.15 rad`, yaw-right `2.43 rad` over 4 seconds.
+
+- Balanced variant was not selected.
+  `runs/hybrid_bc_phase_v4` made pure yaw-left/right more balanced (`3.31/2.58 rad`) but terminated on `arc_bl`, so it is less safe as the current checkpoint.
+
+- Remaining BC issues.
+  Half-speed forward/back are still weak because amplitude-scaled CPGs do not crawl well at low magnitude, and yaw-right still under-reproduces the raw PPO yaw-right table (`5.14 rad`).
+
+- RL fine-tune decision.
+  Do not start residual RL yet; first fix low-speed CPG scaling or discover dedicated half-speed gaits, then add better arc teachers so RL is not asked to repair bad supervised targets.
+
+- Fixed hybrid viewer freeze.
+  `train_hybrid_bc.py --view` now resets the same MuJoCo env instead of recreating it under an active viewer, and `--view-command` can jump directly to a specific command like `yaw_l1` or `fwd1`.
