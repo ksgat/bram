@@ -196,3 +196,70 @@ misc hardware (M3 hardware kit): 15
 
 - Current visual command.
   Run `.venv-rl/bin/python visualize_policy.py --checkpoint runs/ppo_20260630_201558/policy_full_pass.pt --command-suite --episodes 13` to inspect the general joystick policy in the MuJoCo viewer.
+
+6/30 forward/back line polish
+
+- Added a straight-line polish mode.
+  `train_ppo.py --straight-line-polish` samples mostly pure forward/back commands and adds lateral velocity, cross-track error, heading drift, and yaw-rate penalties only for those commands.
+
+- Added line-quality eval metrics.
+  Per-command metrics now include cross-track and heading error, and checkpoint scoring can include a straight-line score so average command reward does not hide drift.
+
+- First polish run improved the full-suite checkpoint.
+  `runs/ppo_20260630_210517` improved straight-line score from about `-80.6` to `-31.6`, with especially better backward tracking.
+
+- Second polish run is the current forward/back candidate.
+  `runs/ppo_20260630_210825/policy_best.pt` reached mean command progress about `0.437` across the full command suite and straight-line score about `-26.9`; it is better but not yet rail-straight.
+
+- Current polished visual command.
+  Run `.venv-rl/bin/python visualize_policy.py --checkpoint runs/ppo_20260630_210825/policy_straight_polish.pt --command-suite --episodes 13` to inspect the forward/back-polished general policy.
+
+6/30 smooth gait-generator search
+
+- Added black-box gait search.
+  `search_gait.py` optimizes a smooth sinusoidal three-servo gait with frequency, per-leg center, amplitude, phase, and second-harmonic terms.
+
+- First forward search found a usable open-loop crawl.
+  `runs/gait_search_forward_refine/best_params.json` gets about `0.343 m` in 4 seconds with about `4 mm` terminal cross-track error in the nominal sim.
+
+- Longer forward eval exposes heading drift.
+  The same gait gets about `0.622 m` in 8 seconds but drifts to about `0.59 rad` heading error, so hardware should use IMU heading trim rather than pure open-loop.
+
+- Basic robustness check passed.
+  With reset/domain randomization enabled, the forward gait averaged about `0.327 m` over 4 seconds across three episodes without terminating.
+
+- Added heading-corrected gait parameters.
+  `search_gait.py` now supports heading/yaw-rate feedback terms that trim the smooth gait using the same heading error and gyro yaw rate a 9DoF IMU would provide.
+
+- First heading-corrected forward gait improved the 8-second line.
+  `runs/gait_search_forward_heading/best_params.json` gets about `0.800 m` in 8 seconds with about `5.9 cm` cross-track error and `0.10 rad` final heading error.
+
+- Current correction note.
+  The short search mostly selected yaw-rate damping instead of absolute heading Kp; on hardware, heading Kp should remain available and be tuned against the real steering direction.
+
+- Added inverse-seeded backward search.
+  `search_gait.py --init-inverse` can seed backward from a forward gait by phase-inverting the smooth waveform, then refine it independently.
+
+- Current backward gait.
+  `runs/gait_search_backward_heading_refine/best_params.json` gets about `1.686 m` backward in 8 seconds with about `4.8 cm` cross-track error and `0.31 rad` heading error; randomized 4-second eval averaged about `0.565 m`.
+
+- Current yaw-left gait.
+  `runs/gait_search_yaw_left/best_params.json` rotates about `4.28 rad` in 4 seconds with about `8.6 cm` planar drift; randomized eval averaged about `4.54 rad`.
+
+- Current yaw-right gait.
+  `runs/gait_search_yaw_right/best_params.json` rotates about `3.68 rad` in 4 seconds with about `11.9 cm` planar drift; randomized eval averaged about `3.63 rad`.
+
+- Tried cloning PPO yaw into the smooth sine gait.
+  `fit_policy_gait.py` records PPO actions and fits the smooth gait formula, but the fit collapses toward the mean action because PPO yaw is high-variance/feedback-like rather than a clean time-only waveform.
+
+- Added direct PPO action-table export.
+  `export_policy_table.py` records deterministic PPO actions into a 50 Hz table that can be replayed or ported to firmware as a lookup/interpolation gait.
+
+- Current PPO yaw table result.
+  From `runs/ppo_20260630_210825/policy_straight_polish.pt`, yaw-right table replay gets about `5.14 rad` in 4 seconds with about `3.7 cm` planar drift; yaw-left gets about `1.20 rad` but drifts about `36 cm`, so yaw-left still needs a better source policy or a separate mirror/refinement.
+
+- Tried mirroring yaw-right into yaw-left.
+  `mirror_policy_table.py` brute-forces servo sign flips, rear swaps, time reversal, phase shifts, and optional full servo permutations from the good yaw-right table.
+
+- Best mirrored yaw-left result.
+  `runs/policy_table_yaw_left_mirror/yaw-left_mirrored_table.json` gets about `0.98 rad` in 4 seconds with about `13 cm` planar drift; this is cleaner than the bad yaw-left PPO table but far weaker than yaw-right.

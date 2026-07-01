@@ -28,6 +28,7 @@ class EvalStats:
     primitive_pass_count: int = 0
     primitive_deficit: float = 0.0
     command_deficit: float = 0.0
+    straight_line_score: float = 0.0
     weak_commands: tuple[str, ...] = ()
     per_command: dict[str, dict[str, float]] = field(default_factory=dict)
 
@@ -46,6 +47,8 @@ class EpisodeResult:
     command_distance: float
     line_distance: float
     yaw_distance: float
+    cross_track_error: float
+    heading_error: float
     length: int
 
 
@@ -506,6 +509,32 @@ def empty_expert_dataset(obs_dim: int, action_dim: int) -> ExpertDataset:
     return ExpertDataset(torch.empty((0, obs_dim)), torch.empty((0, action_dim)))
 
 
+def shaped_training_reward(
+    reward: float,
+    info: dict,
+    args: argparse.Namespace,
+) -> float:
+    if not args.straight_line_polish:
+        return reward
+
+    forward_command = abs(float(info.get("forward_command", 0.0)))
+    yaw_command = abs(float(info.get("yaw_rate_command", 0.0)))
+    if forward_command < 0.20 or yaw_command > 0.15:
+        return reward
+
+    cross_velocity = abs(float(info.get("cross_track_velocity", 0.0)))
+    cross_error = min(abs(float(info.get("cross_track_error", 0.0))), 0.75)
+    heading_error = min(abs(float(info.get("heading_error", 0.0))), np.pi * 0.5)
+    yaw_rate = abs(float(info.get("yaw_rate", 0.0)))
+    penalty = forward_command * (
+        args.straight_cross_velocity_cost * cross_velocity
+        + args.straight_cross_error_cost * cross_error
+        + args.straight_heading_cost * heading_error
+        + args.straight_yaw_rate_cost * yaw_rate
+    )
+    return float(reward - penalty)
+
+
 def normalize_advantages(
     advantages: torch.Tensor,
     obs: torch.Tensor,
@@ -659,6 +688,41 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Actor MSE weight for staying near the frozen post-BC policy during PPO.",
+    )
+    parser.add_argument(
+        "--straight-line-polish",
+        action="store_true",
+        help="Focus randomized training and checkpoint scoring on clean forward/back lines.",
+    )
+    parser.add_argument(
+        "--straight-cross-velocity-cost",
+        type=float,
+        default=1.40,
+        help="Per-step reward penalty for lateral velocity during pure forward/back commands.",
+    )
+    parser.add_argument(
+        "--straight-cross-error-cost",
+        type=float,
+        default=0.32,
+        help="Per-step reward penalty for lateral line error during pure forward/back commands.",
+    )
+    parser.add_argument(
+        "--straight-heading-cost",
+        type=float,
+        default=0.18,
+        help="Per-step reward penalty for heading drift during pure forward/back commands.",
+    )
+    parser.add_argument(
+        "--straight-yaw-rate-cost",
+        type=float,
+        default=0.08,
+        help="Per-step reward penalty for yaw rate during pure forward/back commands.",
+    )
+    parser.add_argument(
+        "--straight-line-score-coef",
+        type=float,
+        default=1.0,
+        help="Eval score multiplier for selecting straight forward/back checkpoints.",
     )
     parser.add_argument(
         "--expert-bc-command-threshold",
@@ -834,6 +898,7 @@ def main() -> None:
         f"gated_curriculum={use_gated_curriculum} "
         f"command_stage={command_stage} "
         f"advantage_normalization={args.advantage_normalization} "
+        f"straight_line_polish={args.straight_line_polish} "
         f"expert_replay_bc_coef={args.expert_replay_bc_coef:.3f} "
         f"bc_anchor_coef={args.bc_anchor_coef:.3f} "
         f"forward_command={args.forward_command:.2f} "
@@ -874,6 +939,7 @@ def main() -> None:
                 dones = []
                 for env_index, env in enumerate(envs):
                     obs, reward, terminated, truncated, info = env.step(action_np[env_index])
+                    reward = shaped_training_reward(reward, info, args)
                     done = terminated or truncated
                     episode_returns[env_index] += reward
                     episode_lengths[env_index] += 1
@@ -1104,6 +1170,7 @@ def main() -> None:
                 "eval_worst_length": eval_stats.worst_length,
                 "eval_primitive_deficit": eval_stats.primitive_deficit,
                 "eval_command_deficit": eval_stats.command_deficit,
+                "eval_straight_line_score": eval_stats.straight_line_score,
                 "policy_loss": float(np.mean(policy_losses)),
                 "expert_bc_loss": float(np.mean(expert_bc_losses)),
                 "bc_anchor_loss": float(np.mean(bc_anchor_losses)),
@@ -1231,6 +1298,7 @@ def save_checkpoint(
             "eval_primitive_pass_count": eval_stats.primitive_pass_count,
             "eval_primitive_deficit": eval_stats.primitive_deficit,
             "eval_command_deficit": eval_stats.command_deficit,
+            "eval_straight_line_score": eval_stats.straight_line_score,
             "eval_weak_commands": eval_stats.weak_commands,
             "eval_per_command": eval_stats.per_command,
         },
@@ -1259,6 +1327,7 @@ def metrics_fieldnames() -> list[str]:
         "eval_worst_length",
         "eval_primitive_deficit",
         "eval_command_deficit",
+        "eval_straight_line_score",
         "policy_loss",
         "expert_bc_loss",
         "bc_anchor_loss",
@@ -1295,6 +1364,7 @@ def write_single_eval_metrics(
         "eval_worst_length": eval_stats.worst_length,
         "eval_primitive_deficit": eval_stats.primitive_deficit,
         "eval_command_deficit": eval_stats.command_deficit,
+        "eval_straight_line_score": eval_stats.straight_line_score,
         "policy_loss": float("nan"),
         "expert_bc_loss": float("nan"),
         "bc_anchor_loss": float("nan"),
@@ -1372,6 +1442,7 @@ def make_eval_stats(
         )
         primitive_deficit = primitive_command_deficit(per_command, args)
         command_deficit = command_deficit_for(stage_required_names(5), per_command, args)
+    straight_line_score = straight_line_eval_score(per_command)
     required_quality = required_command_quality(per_command, args)
     score = mean_reward + 55.0 * mean_distance - 0.50 * survival_shortfall
     if args.randomize_command:
@@ -1385,6 +1456,8 @@ def make_eval_stats(
             - 90.0 * command_deficit
             - 0.75 * survival_shortfall
         )
+        if getattr(args, "straight_line_polish", False):
+            score += getattr(args, "straight_line_score_coef", 1.0) * straight_line_score
     weak = ()
     if args.randomize_command:
         weak = weak_command_names_from_per_command(per_command, 4, args)
@@ -1398,6 +1471,7 @@ def make_eval_stats(
         primitive_pass_count,
         primitive_deficit,
         command_deficit,
+        straight_line_score,
         weak,
         per_command,
     )
@@ -1425,7 +1499,13 @@ def command_options(command: CommandSpec) -> dict[str, float]:
 
 
 def empty_final_info() -> dict[str, float]:
-    return {"command_distance": 0.0, "line_distance": 0.0, "yaw_distance": 0.0}
+    return {
+        "command_distance": 0.0,
+        "line_distance": 0.0,
+        "yaw_distance": 0.0,
+        "cross_track_error": 0.0,
+        "heading_error": 0.0,
+    }
 
 
 def episode_result(
@@ -1440,6 +1520,8 @@ def episode_result(
         command_distance=distance_from_info(final_info),
         line_distance=float(final_info.get("line_distance", 0.0)),
         yaw_distance=float(final_info.get("yaw_distance", 0.0)),
+        cross_track_error=float(final_info.get("cross_track_error", 0.0)),
+        heading_error=float(final_info.get("heading_error", 0.0)),
         length=int(length),
     )
 
@@ -1460,6 +1542,12 @@ def aggregate_command_results(
             ),
             "line": float(np.mean([result.line_distance for result in command_results])),
             "yaw": float(np.mean([result.yaw_distance for result in command_results])),
+            "cross": float(
+                np.mean([result.cross_track_error for result in command_results])
+            ),
+            "heading": float(
+                np.mean([result.heading_error for result in command_results])
+            ),
             "length": float(np.mean([result.length for result in command_results])),
         }
     return per_command
@@ -1468,7 +1556,7 @@ def aggregate_command_results(
 def per_command_fieldnames() -> list[str]:
     fields: list[str] = []
     for command in EVAL_COMMANDS:
-        for metric in ("reward", "cmd", "line", "yaw", "length"):
+        for metric in ("reward", "cmd", "line", "yaw", "cross", "heading", "length"):
             fields.append(f"eval_{command.name}_{metric}")
     return fields
 
@@ -1477,7 +1565,7 @@ def per_command_row(eval_stats: EvalStats) -> dict[str, float]:
     row: dict[str, float] = {}
     for command in EVAL_COMMANDS:
         values = eval_stats.per_command.get(command.name, {})
-        for metric in ("reward", "cmd", "line", "yaw", "length"):
+        for metric in ("reward", "cmd", "line", "yaw", "cross", "heading", "length"):
             row[f"eval_{command.name}_{metric}"] = float(
                 values.get(metric, float("nan"))
             )
@@ -1522,6 +1610,29 @@ def required_command_quality(
         threshold = max(1e-6, thresholds[name])
         ratios.append(per_command.get(name, {}).get("cmd", -threshold) / threshold)
     return float(np.clip(min(ratios), -2.0, 2.0))
+
+
+def straight_line_eval_score(per_command: dict[str, dict[str, float]]) -> float:
+    score = 0.0
+    weights = {
+        "fwd1": 1.0,
+        "back1": 1.0,
+        "fwd05": 0.55,
+        "back05": 0.55,
+    }
+    for name, weight in weights.items():
+        values = per_command.get(name)
+        if not values:
+            continue
+        progress = values.get("cmd", 0.0)
+        cross_error = abs(values.get("cross", 0.0))
+        heading_error = min(abs(values.get("heading", 0.0)), np.pi * 0.5)
+        score += weight * (
+            150.0 * progress
+            - 240.0 * cross_error
+            - 35.0 * heading_error
+        )
+    return float(score)
 
 
 def primitive_command_deficit(
@@ -1649,6 +1760,13 @@ def sample_training_command(
     rng: np.random.Generator,
     args: argparse.Namespace,
 ) -> CommandSpec:
+    if args.straight_line_polish:
+        families = (("idle", 0.04), ("fwd", 0.48), ("back", 0.48))
+        weights = np.array([weight for _, weight in families], dtype=np.float64)
+        weights = weights / np.sum(weights)
+        index = int(rng.choice(len(families), p=weights))
+        return sample_family_command(families[index][0], rng)
+
     families = stage_training_families(stage)
     weak_families = command_families(weak_commands)
     weights = np.array(
