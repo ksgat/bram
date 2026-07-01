@@ -11,12 +11,12 @@
 // Demo input switch:
 // false = Xbox/gamepad over BLE via Bluepad32
 // true  = serial commands like: f 0.5 y -0.3
-static constexpr bool kUseSerialInput = false;
+static constexpr bool kUseSerialInput = true;
 
 static constexpr bool kPrintDebug = true;
 static constexpr bool kUseImuCorrection = false;
 
-// Set these to the actual ESP32 pins you wire to the servo signal lines.
+// when i wire
 static constexpr int kFrontServoPin = 4;
 static constexpr int kBackLeftServoPin = 5;
 static constexpr int kBackRightServoPin = 18;

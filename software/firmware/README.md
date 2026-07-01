@@ -1,6 +1,5 @@
 # Bram Firmware
 
-This folder contains the ESP32 Arduino scaffold for running the current Bram hybrid controller onboard.
 
 The firmware does not run MuJoCo, PPO, Python, or a neural network. It uses the exported deterministic controller data from `software/gait_discovery/exports/bram_grid_controller_export.json`: forward/back CPG params, learned yaw action tables, and mixed-arc blend grids.
 
