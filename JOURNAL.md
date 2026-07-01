@@ -414,3 +414,136 @@ misc hardware (M3 hardware kit): 15
 
 - Exact component-controller review mode works for primitives, not arcs.
   `train_cpg_modulator.py --teacher-controller` runs exact forward/back CPG plus exact yaw tables; idle, forward, full backward, and pure yaw are reviewable, but naive mixed forward+yaw blending still terminates or underperforms.
+
+7/1 residual PPO over component controller
+
+- Added residual PPO trainer.
+  `train_residual_ppo.py` freezes the exact component controller as the base action and trains a small PPO policy that outputs only a gated residual; the residual gate is zero for pure forward/back/yaw so solved primitives stay unchanged.
+
+- Made checkpoint scoring arc-focused.
+  Eval now reports `arc_score`, `arc_cmd`, and weighted `score`; this avoids hiding bad mixed-command behavior behind good primitive scores.
+
+- Smoke and checkpoint reload pass.
+  `runs/residual_ppo_smoke/residual_ppo_20260701_140757/residual_policy_best.pt` reloads and evaluates correctly, proving the training/save/view path works.
+
+- Short 4k pilot shows the right direction but is not solved.
+  `runs/residual_ppo_pilot/residual_ppo_20260701_140851/residual_policy_best.pt` improved arc score from about `-0.068` to `-0.026` at the best checkpoint while preserving primitives, but arcs are still not visually final.
+
+- Next larger run command.
+  `.venv-rl/bin/python -u train_residual_ppo.py --total-steps 50000 --num-envs 4 --rollout-steps 256 --eval-interval 10 --eval-episodes 1 --output-dir runs/residual_ppo_arc --torch-threads 2 --snapshot-interval 10`
+
+7/1 residual PPO carrier fix
+
+- Naive mixed base was the main arc crash.
+  The original residual PPO used the naive component blend for arcs, so `arc_fl` hit the body-height termination at step 24; diagnostics showed `below_body_limit=True` with height around `0.034 m`.
+
+- Switched mixed commands to a safe CPG carrier.
+  `train_residual_ppo.py` now uses pure forward/back CPG as the base for mixed forward+yaw commands and leaves pure yaw on the exact yaw tables; zero-residual mixed commands now survive all four arc evals for 400 steps.
+
+- Added focused arc sampling and arc-score checkpointing.
+  Training now oversamples the exact four eval arcs, weights `arc_fl` highest, and selects best checkpoints by `arc_score` instead of primitive-dominated aggregate score.
+
+- Best current residual checkpoint.
+  `runs/residual_ppo_arc_command/residual_ppo_20260701_141701/residual_policy_best.pt` reaches `arc_score=0.0108`, `arc_cmd=0.0343`, and all arcs survive 400 steps; this is a real improvement over crashy arcs but still weak joystick obedience.
+
+- Longer resume did not help.
+  `runs/residual_ppo_arc_command_resume/residual_ppo_20260701_141847` degraded and reintroduced some arc termination, so do not promote it over the shorter command-focused best checkpoint.
+
+7/1 residual scaled-arc controller
+
+- Scalar yaw-table residuals are the best mixed-command baseline so far.
+  A safe forward/back CPG carrier plus command-specific scaled yaw-table residuals keeps all four arc commands alive for 400 steps and reaches `arc_score=0.1598`, with scales `fl=-0.20`, `fr=-0.50`, `bl=-0.40`, `br=-0.40`.
+
+- Yaw action must be an explicit policy feature.
+  BC without the yaw-table action could not clone the scaled residual timing; adding `yaw_action` to the residual policy observation made supervised cloning work.
+
+- Best learned residual checkpoint is the yaw-feature BC model.
+  `runs/residual_bc_scaled_arc_yawfeat/residual_ppo_20260701_142533/residual_policy_best.pt` reaches `arc_score=0.1391`, `arc_cmd=0.1619`, and preserves the solved primitive commands.
+
+- PPO fine-tuning did not improve the BC model.
+  `runs/residual_ppo_arc_yawfeat_finetune/residual_ppo_20260701_142606/residual_policy_best.pt` tops out at `arc_score=0.1324`, so keep the BC checkpoint as the current learned best and the scaled controller as the current teacher.
+
+7/1 improved arc teacher and DAgger distillation
+
+- Added arc-controller JSON support.
+  `train_residual_ppo.py` can now load `--arc-controller` files with per-quadrant `base_scale`, three servo-specific `yaw_scales`, and `step_offset`; primitives still use the exact forward/back CPG and yaw tables.
+
+- Added `search_arc_controller.py`.
+  The search optimizes the small mixed-command teacher directly instead of asking PPO to rediscover arcs; it keeps the controller ESP32-friendly because the policy surface is still tiny.
+
+- Improved the deterministic mixed-command teacher.
+  `runs/arc_controller_search/arc_controller_20260701_143909/best_arc_controller.json` reaches `arc_score=0.2906`, `arc_cmd=0.2996`, up from the scalar teacher's `arc_score=0.1598`.
+
+- Plain BC was not enough for the richer teacher.
+  A 96-hidden clone reached only `arc_score=0.0765`, and a longer 160-hidden clone reached `arc_score=0.1341`; low supervised loss did not prevent closed-loop rollout drift.
+
+- Added explicit command features and DAgger-style residual distillation.
+  The residual policy input now includes the command, and pretraining can collect learner-visited states labeled by the deterministic teacher via `--residual-dagger-rounds`.
+
+- Best current learned residual policy.
+  `runs/residual_dagger_arc_controller_weighted/residual_ppo_20260701_144648/residual_policy_best.pt` reaches `arc_score=0.2736`, `arc_cmd=0.2834`, close to the improved teacher while preserving the solved primitive commands.
+
+7/1 broad joystick-grid eval and training
+
+- Added broad mixed-command eval coverage.
+  `train_residual_ppo.py --eval-suite broad` now evaluates a 4x4 magnitude grid over all forward/yaw sign quadrants, and `--view-command broad` can cycle the same commands visually.
+
+- The corner-focused policy does not generalize enough.
+  The previous best learned residual scores `arc_score=0.2736` on the core four arcs but only `arc_score=0.0638` on the broad joystick grid.
+
+- Added broad quadrant search.
+  `search_arc_controller.py --command broad_all` optimizes each quadrant's tiny arc-controller parameters over all mixed magnitudes instead of only the `0.7/0.7` corner.
+
+- Best current broad deterministic teacher.
+  `runs/arc_controller_search/arc_controller_20260701_145334/best_arc_controller.json` improves broad teacher score from `arc_score=0.1040` to `arc_score=0.1503`, but its core four-arc score is lower than the corner-focused teacher.
+
+- Best current broad learned policy.
+  `runs/residual_dagger_broad_arc_controller/residual_ppo_20260701_151038/residual_policy_best.pt` reaches broad `arc_score=0.1279`, up from the previous learned broad `0.0638`; its core four-arc score is `0.1901`, so keep the earlier `144648` checkpoint for sharp corner-arc demos.
+
+- Dataset cap cleanup.
+  `--residual-dataset-max-samples` now caps the initial BC dataset as well as DAgger-augmented datasets, which keeps broad-grid clone runs from silently collecting oversized supervised buffers.
+
+7/1 magnitude-aware grid controller
+
+- Added magnitude-aware arc-controller grid support.
+  Arc-controller JSON entries can now include per-quadrant `grid` params keyed like `f0p70_y0p90`; `train_residual_ppo.py` interpolates grid params for arbitrary joystick magnitudes.
+
+- Added grid-point search mode.
+  `search_arc_controller.py --command grid_all` optimizes individual mixed-command grid points while preserving the older quadrant-level defaults for interpolation fallback.
+
+- Best current deterministic joystick teacher.
+  `runs/arc_controller_grid/arc_controller_20260701_151532/best_arc_controller.json` reaches broad `arc_score=0.2110`, up from the broad quadrant teacher's `0.1503`; it also reaches core `arc_score=0.3634`, beating the earlier corner-focused deterministic teacher.
+
+- Learned grid clone improved but lost too much authority.
+  `runs/residual_dagger_grid_arc_controller/residual_ppo_20260701_152801/residual_policy_best.pt` reaches broad `arc_score=0.1512`, better than the previous broad learned `0.1279`, but core `arc_score=0.1704`; for visual review and near-term control, prefer the deterministic grid controller.
+
+- Current interpretation.
+  The best ESP32-friendly path is now command -> magnitude-grid interpolation -> CPG/yaw-table function -> servo output; a learned residual clone is optional polish, not the best controller yet.
+
+7/1 standalone controller export
+
+- Added standalone deterministic runtime.
+  `bram_controller.py` computes normalized servo commands from `(forward, yaw, step, heading_error, yaw_rate)` using only JSON data and NumPy; it does not require MuJoCo.
+
+- Verified runtime parity.
+  Sampled mixed, pure yaw, pure forward, and idle commands match the `train_residual_ppo.py` deterministic grid-controller path with `max_diff=0.0`.
+
+- Added combined export artifact.
+  `exports/bram_grid_controller_export.json` bundles forward/back gait params, yaw tables, grid arc-controller params, dt, scaling, and command metadata into one file for later ESP32/C++ translation.
+
+- Current deployable control shape.
+  Runtime loop is `read command + IMU -> BramGridController.action(...) -> map [-1, 1] to servo pulse/range`; heading correction is only active for pure forward/back at the moment.
+
+7/1 right-yaw retraining
+
+- Retrained right yaw under the planar-yaw PPO reward.
+  `runs/ppo_yaw_right_planar_300k/ppo_20260701_154021/policy_best.pt` was trained with the same 300k-step settings as the good left-yaw run, but the raw exported table overspun at about `15.15 rad` over 8 seconds.
+
+- Chose a scaled right-yaw table for review.
+  `runs/policy_table_yaw_right_planar_300k_8s_scaled_0p4/yaw-right_policy_table.json` gives about `7.04 rad` over 8 seconds with about `3.4 cm` planar drift, much cleaner than the old right table.
+
+- Retuned right-side mixed arcs for the new table.
+  `runs/arc_controller_grid_right_yaw_0p40/arc_controller_20260701_155840/best_arc_controller.json` updates the `arc_fr` and `arc_br` grid points; core right arcs improved, but broad joystick score is still below the older all-grid controller.
+
+- Updated defaults.
+  `bram_controller.py`, `train_cpg_modulator.py`, and `train_hybrid_bc.py` now point right yaw at the scaled planar table; `bram_controller.py` also points at the right-yaw-retuned arc grid.

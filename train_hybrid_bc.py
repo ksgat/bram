@@ -24,7 +24,9 @@ from search_gait import gait_action, load_params
 DEFAULT_FORWARD_GAIT = Path("runs/gait_search_forward_heading/best_params.json")
 DEFAULT_BACKWARD_GAIT = Path("runs/gait_search_backward_heading_refine/best_params.json")
 DEFAULT_YAW_LEFT_GAIT = None
-DEFAULT_YAW_RIGHT_TABLE = Path("runs/policy_table_yaw_right_15cm/yaw-right_policy_table.json")
+DEFAULT_YAW_RIGHT_TABLE = Path(
+    "runs/policy_table_yaw_right_planar_300k_8s_scaled_0p4/yaw-right_policy_table.json"
+)
 DEFAULT_YAW_LEFT_TABLE = Path("runs/policy_table_yaw_left_mirror/yaw-left_mirrored_table.json")
 
 COMMAND_SUITE: tuple[tuple[str, float, float], ...] = (
