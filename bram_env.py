@@ -32,10 +32,12 @@ GAIT_PHASE_HZ = 1.4
 LINEAR_TRACKING_SIGMA_MPS = 0.070
 YAW_TRACKING_SIGMA_RAD_S = 0.50
 HEADING_TRACKING_SIGMA_RAD = 0.70
-MIN_CHASSIS_CENTER_HEIGHT_M = 0.008
+MIN_CHASSIS_CENTER_HEIGHT_M = 0.035
+CHASSIS_CENTER_HEIGHT_WARNING_M = 0.050
+LEVEL_TILT_WARNING_RAD = 0.18
 BATTERY_SIDE_DOWN_UPRIGHT_LIMIT = -0.25
 BATTERY_SIDE_WARNING_UPRIGHT = -0.10
-ENV_COMMAND_MODE = "forward_yaw_heading_v10"
+ENV_COMMAND_MODE = "forward_yaw_heading_v14_planar_yaw_boost"
 
 
 @dataclass
@@ -149,6 +151,7 @@ class BramTripodEnv(gym.Env):
         self.start_x = 0.0
         self.start_y = 0.0
         self.start_heading = 0.0
+        self.previous_heading = 0.0
         self.desired_heading = 0.0
         self.heading_error = 0.0
         self.cross_track_error = 0.0
@@ -239,6 +242,7 @@ class BramTripodEnv(gym.Env):
         self.start_x = self._x_position()
         self.start_y = self._y_position()
         self.start_heading = self._heading()
+        self.previous_heading = self.start_heading
         self.desired_heading = self.start_heading
         self.heading_error = 0.0
         self.cross_track_error = 0.0
@@ -367,7 +371,7 @@ class BramTripodEnv(gym.Env):
         body_velocity = self._world_velocity_to_body(world_x_velocity, world_y_velocity)
         body_forward_velocity = float(body_velocity[0])
         body_lateral_velocity = float(body_velocity[1])
-        yaw_rate = float(self._sensor("gyro", 3)[2])
+        gyro_yaw_rate = float(self._sensor("gyro", 3)[2])
         desired_forward_velocity = self.forward_command * MAX_FORWARD_COMMAND_MPS
         desired_yaw_rate = self.yaw_rate_command * MAX_YAW_COMMAND_RAD_S
 
@@ -379,6 +383,10 @@ class BramTripodEnv(gym.Env):
             previous_desired_heading + desired_yaw_rate * self.dt
         )
         current_heading = self._heading()
+        heading_delta = wrap_angle(current_heading - self.previous_heading)
+        self.previous_heading = current_heading
+        planar_yaw_rate = heading_delta / self.dt
+        yaw_rate = planar_yaw_rate
         self.heading_error = wrap_angle(current_heading - self.desired_heading)
 
         desired_axis = np.array(
@@ -420,11 +428,17 @@ class BramTripodEnv(gym.Env):
         max_contact_foot_speed = (
             float(np.max(contact_foot_speeds)) if contact_foot_speeds.size else 0.0
         )
-        below_body_limit = height < MIN_CHASSIS_CENTER_HEIGHT_M
+        body_height_deficit = max(0.0, MIN_CHASSIS_CENTER_HEIGHT_M - height)
+        body_height_warning_deficit = max(
+            0.0, CHASSIS_CENTER_HEIGHT_WARNING_M - height
+        )
+        below_body_limit = body_height_deficit > 0.0
         battery_side_down = upright < BATTERY_SIDE_DOWN_UPRIGHT_LIMIT
         terminated = bool(
             below_body_limit or battery_side_down or not np.isfinite(obs).all()
         )
+        level_tilt_rad = float(np.arccos(np.clip(upright, -1.0, 1.0)))
+        level_tilt_excess_rad = max(0.0, level_tilt_rad - LEVEL_TILT_WARNING_RAD)
 
         episode_fraction = min(1.0, self.steps / self.max_steps)
         progress_pressure = smoothstep((episode_fraction - 0.05) / 0.25)
@@ -436,7 +450,13 @@ class BramTripodEnv(gym.Env):
             (upright - BATTERY_SIDE_DOWN_UPRIGHT_LIMIT)
             / (BATTERY_SIDE_WARNING_UPRIGHT - BATTERY_SIDE_DOWN_UPRIGHT_LIMIT)
         )
-        alive_quality = 0.0 if terminated else battery_orientation_quality
+        body_height_quality = smoothstep(
+            (height - MIN_CHASSIS_CENTER_HEIGHT_M)
+            / (CHASSIS_CENTER_HEIGHT_WARNING_M - MIN_CHASSIS_CENTER_HEIGHT_M)
+        )
+        alive_quality = (
+            0.0 if terminated else battery_orientation_quality * body_height_quality
+        )
         commanded_speed = abs(desired_forward_velocity)
         commanded_yaw_speed = abs(desired_yaw_rate)
         command_activity = float(np.clip(forward_weight + yaw_weight, 0.0, 1.0))
@@ -530,7 +550,7 @@ class BramTripodEnv(gym.Env):
 
         progress_reward = alive_quality * (
             10.5 * rewarded_forward_progress * (0.55 + 0.45 * heading_gate)
-            + 1.10 * yaw_weight * rewarded_yaw_progress
+            + 3.50 * yaw_weight * rewarded_yaw_progress
         )
         forward_reward = (
             forward_weight
@@ -543,17 +563,17 @@ class BramTripodEnv(gym.Env):
         yaw_reward = (
             yaw_weight
             * alive_quality
-            * (0.46 * yaw_motion_quality + 0.16 * yaw_tracking_reward)
+            * (0.75 * yaw_motion_quality + 0.25 * yaw_tracking_reward)
         )
         command_tracking_reward = alive_quality * (
             0.16 * forward_weight * gated_linear_tracking_reward
-            + 0.14 * yaw_weight * yaw_tracking_reward
+            + 0.24 * yaw_weight * yaw_tracking_reward
             + 0.10 * mixed_weight * coupled_tracking_reward
             + 0.16 * idle_tracking_reward
         )
         command_motion_reward = alive_quality * (
             0.06 * forward_weight * forward_motion_quality
-            + 0.06 * yaw_weight * yaw_motion_quality
+            + 0.12 * yaw_weight * yaw_motion_quality
         )
         forward_stall = (
             forward_weight
@@ -566,14 +586,14 @@ class BramTripodEnv(gym.Env):
             * smoothstep(yaw_weight / 0.20)
         )
         command_stall_penalty = alive_quality * (
-            progress_pressure * (0.20 * forward_stall + 0.16 * yaw_stall)
+            progress_pressure * (0.20 * forward_stall + 0.32 * yaw_stall)
         )
         keep_going_reward = 0.0
         alive_reward = 0.0
         command_sign_penalty_scale = 0.70 + 0.30 * soft_penalty_scale
         wrong_way_penalty = command_sign_penalty_scale * (
             9.0 * forward_weight * max(0.0, -forward_progress)
-            + 1.25 * yaw_weight * max(0.0, -yaw_progress)
+            + 3.00 * yaw_weight * max(0.0, -yaw_progress)
         )
         overspeed_penalty = (
             soft_penalty_scale
@@ -586,6 +606,16 @@ class BramTripodEnv(gym.Env):
             * 0.25
             * max(0.0, BATTERY_SIDE_WARNING_UPRIGHT - upright)
         )
+        body_height_penalty = soft_penalty_scale * (
+            80.0 * body_height_warning_deficit
+            + 3000.0 * body_height_warning_deficit * body_height_warning_deficit
+            + 160.0 * body_height_deficit
+        )
+        level_penalty = soft_penalty_scale * (
+            0.35 * level_tilt_rad
+            + 1.40 * level_tilt_rad * level_tilt_rad
+            + 5.50 * level_tilt_excess_rad * level_tilt_excess_rad
+        )
         sideways_penalty = (
             soft_penalty_scale
             * straight_weight
@@ -595,7 +625,7 @@ class BramTripodEnv(gym.Env):
             )
         )
         translation_penalty = (
-            soft_penalty_scale * rotate_in_place_weight * 0.10 * planar_speed
+            soft_penalty_scale * rotate_in_place_weight * 0.25 * planar_speed
         )
         idle_motion_cost = alive_quality * idle_weight * (
             0.30 * planar_speed + 0.12 * abs(yaw_rate)
@@ -640,6 +670,8 @@ class BramTripodEnv(gym.Env):
             - command_stall_penalty
             - overspeed_penalty
             - upright_penalty
+            - body_height_penalty
+            - level_penalty
             - sideways_penalty
             - translation_penalty
             - idle_motion_cost
@@ -681,6 +713,9 @@ class BramTripodEnv(gym.Env):
             "body_forward_velocity": body_forward_velocity,
             "body_lateral_velocity": body_lateral_velocity,
             "yaw_rate": yaw_rate,
+            "gyro_yaw_rate": gyro_yaw_rate,
+            "heading_delta": heading_delta,
+            "planar_yaw_rate": planar_yaw_rate,
             "heading": current_heading,
             "desired_heading": self.desired_heading,
             "heading_error": self.heading_error,
@@ -707,7 +742,12 @@ class BramTripodEnv(gym.Env):
             "planar_speed": planar_speed,
             "height": height,
             "upright": upright,
+            "level_tilt_rad": level_tilt_rad,
+            "level_tilt_excess_rad": level_tilt_excess_rad,
             "below_body_limit": below_body_limit,
+            "body_height_deficit": body_height_deficit,
+            "body_height_warning_deficit": body_height_warning_deficit,
+            "body_height_quality": body_height_quality,
             "battery_side_down": battery_side_down,
             "foot_contact_count": foot_contact_count,
             "mean_contact_foot_speed": mean_contact_foot_speed,
@@ -724,6 +764,8 @@ class BramTripodEnv(gym.Env):
             "alive_quality": alive_quality,
             "battery_orientation_quality": battery_orientation_quality,
             "body_height_limit": MIN_CHASSIS_CENTER_HEIGHT_M,
+            "body_height_warning": CHASSIS_CENTER_HEIGHT_WARNING_M,
+            "level_tilt_warning_rad": LEVEL_TILT_WARNING_RAD,
             "battery_side_down_upright_limit": BATTERY_SIDE_DOWN_UPRIGHT_LIMIT,
             "roll_pitch_rate": roll_pitch_rate,
             "voltage": self._current_voltage(),
@@ -746,6 +788,8 @@ class BramTripodEnv(gym.Env):
             "command_stall_penalty": command_stall_penalty,
             "overspeed_penalty": overspeed_penalty,
             "upright_penalty": upright_penalty,
+            "body_height_penalty": body_height_penalty,
+            "level_penalty": level_penalty,
             "sideways_penalty": sideways_penalty,
             "translation_penalty": translation_penalty,
             "idle_motion_cost": idle_motion_cost,

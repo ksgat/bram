@@ -210,16 +210,16 @@
         <geom
                     name="back_right_leg_tube"
                     type="capsule"
-                    fromto="0 0 0 -0.158 0 -0.063"
+                    fromto="0 0 0 -0.136 0 -0.063"
                     size="0.0047625"
-                    mass="0.012"
+                    mass="0.011"
                     friction="1.2 0.04 0.005"
                     material="carbon"
                 />
         <geom
                     name="back_right_rubber_tip"
                     type="cylinder"
-                    fromto="-0.14685342 0 -0.05855547 -0.16914658 0 -0.06744453"
+                    fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
                     size="0.0065"
                     mass="0.003"
                     condim="4"

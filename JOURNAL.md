@@ -289,3 +289,111 @@ misc hardware (M3 hardware kit): 15
 
 - Fixed hybrid viewer freeze.
   `train_hybrid_bc.py --view` now resets the same MuJoCo env instead of recreating it under an active viewer, and `--view-command` can jump directly to a specific command like `yaw_l1` or `fwd1`.
+
+- Added pure-yaw direct bypass.
+  Pure yaw commands now bypass the residual network and use the best direct yaw sources: searched yaw-left and PPO-table yaw-right.
+
+- Current pure-yaw result after bypass.
+  With `runs/hybrid_bc_phase_v2/hybrid_bc_current.pt`, yaw-left is about `4.28 rad` in 4 seconds with about `8.6 cm` planar drift, and yaw-right is about `5.14 rad` with about `3.7 cm` planar drift.
+
+6/30 15 cm symmetric model retest
+
+- Fixed the remaining leg-length asymmetry.
+  `bram.xml` now uses the same 15 cm tube/tip geometry for all three legs; the old back-right leg was longer than the others.
+
+- Fresh PPO yaw-left still failed from scratch.
+  `runs/ppo_yaw_left_15cm/ppo_20260630_233657` reached only about `0.88 rad` yaw in direct rollout with about `30 cm` planar drift, so the geometry bug was not the full left-yaw problem.
+
+- Fresh PPO yaw-right learned strongly.
+  `runs/ppo_yaw_right_15cm/ppo_20260630_233657` reached about `12.12 rad` yaw in direct rollout with about `27 cm` planar drift; high yaw rate, but still too much absolute drift for a clean firmware primitive.
+
+- Old yaw artifacts changed under the corrected model.
+  The searched yaw-left gait improved to about `4.19 rad` with about `5.4 cm` drift, while the old yaw-right action table degraded to about `2.14 rad` with about `9 cm` drift.
+
+- Current conclusion.
+  The asymmetric leg was a real model bug, but left/right yaw learning is still not equivalent; do not keep training yaw-left PPO from scratch without seeding it from the searched gait or using a residual/teacher setup.
+
+7/1 body-height limit
+
+- Added an aggressive no-body-drag constraint.
+  The MuJoCo env now terminates when chassis center height drops below `3.5 cm` and starts penalizing below `5.0 cm`.
+
+- Wired height into gait scoring.
+  `search_gait.py` and `mirror_policy_table.py` now track min height plus warning/hard height deficits, so search and table audits reject low chassis gaits.
+
+- Invalidated the latest strict left-yaw candidate.
+  `runs/gait_search_yaw_left_strict_15cm/best_params.json` now terminates after `22` steps with `min_height=0.03475 m`, so it was relying on dropping too low.
+
+7/1 height-limited yaw retraining
+
+- Added target-rate yaw scoring.
+  Yaw search now scores against the commanded yaw distance instead of rewarding unbounded spin, so overspin cannot hide drift.
+
+- Kept right yaw PPO.
+  The right yaw PPO remains the trusted right primitive; the partial right search was stopped rather than replacing a visually good policy.
+
+- Dedicated left-yaw PPO still failed.
+  `runs/ppo_yaw_left_height_v1/ppo_20260701_085732` was warm-started from the good right-yaw PPO, but ended at only about `0.020` command distance after 50k steps.
+
+- Left yaw v1/v2 search found feasibility.
+  `runs/gait_search_yaw_left_height_v1` found safe but weak yaw (`2.19 rad`), then `height_v2` found target-speed yaw but with too much drift (`5.15 rad`, `13.8 cm` planar drift).
+
+- Current left yaw primitive.
+  `runs/gait_search_yaw_left_height_v3_lowdrift/best_params.json` gets about `4.94 rad` against a `4.8 rad` target over 4 seconds, with about `3.0 cm` final planar drift, `5.9 cm` max drift, `min_height=3.66 cm`, and no hard height violation.
+
+- Updated hybrid defaults.
+  `train_hybrid_bc.py` now defaults yaw-left to the height-limited low-drift gait and yaw-right to the 15 cm PPO-exported table.
+
+- Longer left-yaw follow-up.
+  `height_v4_8s` and `height_v5_lowpathdrift` searched longer 8-second holds; v5 survives 8 seconds with about `8.96 rad` yaw, `5.3 cm` final drift, and `6.5 cm` max drift, but its 4-second endpoint drift is about `11.3 cm`.
+
+- Mixed-horizon search was not selected.
+  `height_v6_mixed` evaluated both 4-second and 8-second horizons, but ended with worse endpoint drift (`8.8 cm` at 4 seconds and `10.5 cm` at 8 seconds), so it is not the current default.
+
+- Current left-yaw recommendation.
+  Use `height_v3_lowdrift` for short viewer/command-suite tests and compare `height_v5_lowpathdrift` only if testing sustained 8-second yaw holds.
+
+7/1 left PPO level-penalty test
+
+- Added explicit levelness reward pressure.
+  `bram_env.py` now penalizes chassis tilt angle directly via `level_penalty`, with a stronger cost after about `0.18 rad` of roll/pitch tilt.
+
+- Fresh left-yaw PPO still failed.
+  `runs/ppo_yaw_left_level_v1/ppo_20260701_113309` trained for 50k steps from scratch under the level penalty, but best headless eval only reached about `0.047` command progress over a full 400-step episode.
+
+- Conclusion.
+  Levelness penalty reduces the incentive to twitch/tilt, but by itself it makes PPO settle into weak near-stationary motion instead of discovering left yaw; left yaw likely needs an action prior/residual/teacher from a deterministic gait rather than plain PPO from scratch.
+
+7/1 planar-yaw metric fix
+
+- Found the yaw-score bug.
+  The env was integrating MuJoCo gyro `z` as yaw progress; chassis rocking/tilting can create body-frame gyro-z without meaningful planar heading change.
+
+- Changed yaw progress to projected heading delta.
+  `bram_env.py` now computes `planar_yaw_rate` from wrapped chassis heading change between steps and uses that for `yaw_progress`, `yaw_error`, `yaw_distance`, and command distance; gyro-z is kept only as `gyro_yaw_rate` diagnostics.
+
+- Invalidated previous left-yaw gait scores.
+  `runs/gait_search_yaw_left_height_v3_lowdrift/best_params.json` drops from the old apparent `4.94 rad` to only about `0.33 rad` of real planar yaw over 4 seconds, confirming the visual wobble complaint.
+
+- Right yaw remains real.
+  `runs/policy_table_yaw_right_15cm/yaw-right_policy_table.json` still replays about `7.07 rad` of planar yaw over 4 seconds under the fixed metric, though it drifts about `15 cm`.
+
+- Removed invalid left-yaw default.
+  `train_hybrid_bc.py` no longer defaults to the old left-yaw gait; left yaw needs retraining under the planar-yaw metric before being used as a direct primitive.
+
+7/1 planar-yaw left retraining
+
+- Broad deterministic search failed under real planar yaw.
+  `runs/gait_search_yaw_left_planar_v1` mostly terminated early and found only about `0.011 rad` of real left yaw, confirming the old sine gait was not a valid seed.
+
+- Mirroring right yaw was not enough.
+  `runs/policy_table_yaw_left_mirror_planar_v2_allperm` tried all servo permutations/signs/time shifts from the real right-yaw table; the best result was only about `1.17 rad` left yaw against a `4.8 rad` target.
+
+- Boosted PPO yaw reward after fixing the metric.
+  `bram_env.py` now uses `forward_yaw_heading_v14_planar_yaw_boost`, with stronger reward for real planar yaw, stronger wrong-way yaw penalty, and more translation penalty during rotate-in-place.
+
+- PPO finally learned real left yaw.
+  `runs/ppo_yaw_left_planar_v1/ppo_20260701_114808/policy_best.pt` reaches about `0.428` command progress, meaning about `4.28 rad` real planar left yaw over 8 seconds.
+
+- Short fine-tune barely improved it.
+  `runs/ppo_yaw_left_planar_v2_finetune/ppo_20260701_115304/policy_best.pt` reaches about `0.433` command progress, or about `4.33 rad` over 8 seconds, but still drifts about `17 cm`; this is real yaw but not yet a clean primitive.

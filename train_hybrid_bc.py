@@ -23,8 +23,8 @@ from search_gait import gait_action, load_params
 
 DEFAULT_FORWARD_GAIT = Path("runs/gait_search_forward_heading/best_params.json")
 DEFAULT_BACKWARD_GAIT = Path("runs/gait_search_backward_heading_refine/best_params.json")
-DEFAULT_YAW_LEFT_GAIT = Path("runs/gait_search_yaw_left/best_params.json")
-DEFAULT_YAW_RIGHT_TABLE = Path("runs/policy_table_yaw_right/yaw-right_policy_table.json")
+DEFAULT_YAW_LEFT_GAIT = None
+DEFAULT_YAW_RIGHT_TABLE = Path("runs/policy_table_yaw_right_15cm/yaw-right_policy_table.json")
 DEFAULT_YAW_LEFT_TABLE = Path("runs/policy_table_yaw_left_mirror/yaw-left_mirrored_table.json")
 
 COMMAND_SUITE: tuple[tuple[str, float, float], ...] = (
@@ -190,6 +190,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phase-harmonics", type=int, default=4)
     parser.add_argument("--seed", type=int, default=29)
     parser.add_argument("--eval-episodes", type=int, default=1)
+    parser.add_argument(
+        "--direct-pure-yaw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Bypass the residual net for pure yaw and use the best direct yaw teacher.",
+    )
+    parser.add_argument(
+        "--direct-pure-yaw-threshold",
+        type=float,
+        default=0.05,
+        help="Maximum absolute forward command considered pure yaw.",
+    )
     parser.add_argument("--view", action="store_true")
     parser.add_argument(
         "--view-command",
@@ -394,16 +406,24 @@ def train_model(
 
 def hybrid_action(
     model: ResidualModulator,
+    library: TeacherLibrary,
     obs: np.ndarray,
     base_action: np.ndarray,
     previous_action: np.ndarray,
     forward_command: float,
     yaw_command: float,
+    step: int,
     t: float,
     episode_seconds: float,
     residual_limit: float,
     args: argparse.Namespace,
 ) -> np.ndarray:
+    if (
+        args.direct_pure_yaw
+        and abs(forward_command) <= args.direct_pure_yaw_threshold
+        and abs(yaw_command) > 1e-6
+    ):
+        return library.yaw_teacher_action(yaw_command, step, t)
     if abs(yaw_command) < 1e-6:
         return base_action.astype(np.float32)
     features = model_input(
@@ -454,11 +474,13 @@ def evaluate_model(
                 base = library.base_action(forward, t)
                 action = hybrid_action(
                     model,
+                    library,
                     obs,
                     base,
                     previous_action,
                     forward,
                     yaw,
+                    step,
                     t,
                     args.episode_seconds,
                     args.residual_limit,
@@ -628,11 +650,13 @@ def run_viewer(
             base = library.base_action(forward, t)
             action = hybrid_action(
                 model,
+                library,
                 obs,
                 base,
                 previous_action,
                 forward,
                 yaw,
+                step,
                 t,
                 args.episode_seconds,
                 args.residual_limit,
