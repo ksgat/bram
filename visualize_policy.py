@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import platform
+import sys
 import time
 from pathlib import Path
 
@@ -10,6 +13,23 @@ import torch
 
 from bram_env import BramTripodEnv, ENV_COMMAND_MODE
 from train_ppo import ActorCritic
+
+
+COMMAND_SUITE = (
+    ("idle", 0.0, 0.0),
+    ("fwd1", 1.0, 0.0),
+    ("back1", -1.0, 0.0),
+    ("fwd05", 0.5, 0.0),
+    ("back05", -0.5, 0.0),
+    ("yaw_l1", 0.0, 1.0),
+    ("yaw_r1", 0.0, -1.0),
+    ("yaw_l05", 0.0, 0.5),
+    ("yaw_r05", 0.0, -0.5),
+    ("arc_fl", 0.7, 0.7),
+    ("arc_fr", 0.7, -0.7),
+    ("arc_bl", -0.7, 0.7),
+    ("arc_br", -0.7, -0.7),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,15 +43,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forward-command", type=float, default=1.0)
     parser.add_argument("--yaw-rate-command", type=float, default=0.0)
     parser.add_argument("--random-command", action="store_true")
+    parser.add_argument(
+        "--command-suite",
+        action="store_true",
+        help="Cycle through idle, forward/back, yaw, and arc commands.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    maybe_relaunch_with_mjpython(args)
+    if args.command_suite:
+        args.episodes = max(args.episodes, len(COMMAND_SUITE))
     checkpoint = args.checkpoint or latest_checkpoint()
     env = BramTripodEnv(
         randomize_reset=False,
-        randomize_command=args.random_command,
+        randomize_command=args.random_command and not args.command_suite,
         command_forward=args.forward_command,
         command_yaw_rate=args.yaw_rate_command,
     )
@@ -49,6 +77,21 @@ def main() -> None:
         return
 
     run_viewer(env, agent, args)
+
+
+def maybe_relaunch_with_mjpython(args: argparse.Namespace) -> None:
+    if args.headless or platform.system() != "Darwin" or os.environ.get("MJPYTHON_BIN"):
+        return
+
+    mjpython = Path(sys.executable).with_name("mjpython")
+    if not mjpython.exists():
+        raise RuntimeError(
+            "MuJoCo viewer requires mjpython on macOS. Run this command with "
+            f"`mjpython {' '.join(sys.argv)}`."
+        )
+
+    print(f"macOS MuJoCo viewer requires mjpython; relaunching with {mjpython}")
+    os.execv(str(mjpython), [str(mjpython), *sys.argv])
 
 
 def latest_checkpoint() -> Path:
@@ -111,7 +154,23 @@ def run_headless(
     distances = []
     lengths = []
     for episode in range(args.episodes):
-        _, total_reward, final_info, length = rollout_episode(env, agent, args, args.seed + episode)
+        command_name, command = command_for_episode(args, episode)
+        _, total_reward, final_info, length = rollout_episode(
+            env,
+            agent,
+            args,
+            args.seed + episode,
+            command,
+        )
+        print(
+            f"episode={episode + 1} "
+            f"command={command_name} "
+            f"reward={total_reward:.3f} "
+            f"command_progress={distance_from_info(final_info):.4f} "
+            f"forward_cmd={command['forward_command']:.2f} "
+            f"yaw_cmd={command['yaw_rate_command']:.2f} "
+            f"length={length}"
+        )
         rewards.append(total_reward)
         distances.append(distance_from_info(final_info))
         lengths.append(length)
@@ -125,8 +184,9 @@ def run_headless(
 def run_viewer(env: BramTripodEnv, agent: ActorCritic, args: argparse.Namespace) -> None:
     import mujoco.viewer
 
-    obs, _ = env.reset(seed=args.seed)
     episode = 1
+    command_name, command = command_for_episode(args, episode - 1)
+    obs, _ = env.reset(seed=args.seed, options=command)
     total_reward = 0.0
     started = time.monotonic()
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
@@ -141,16 +201,18 @@ def run_viewer(env: BramTripodEnv, agent: ActorCritic, args: argparse.Namespace)
             if terminated or truncated:
                 print(
                     f"episode={episode} "
+                    f"command={command_name} "
                     f"reward={total_reward:.3f} "
                     f"command_progress={distance_from_info(info):.4f} "
-                    f"forward_cmd={info.get('forward_command', 0.0):.2f} "
-                    f"yaw_cmd={info.get('yaw_rate_command', 0.0):.2f} "
+                    f"forward_cmd={command['forward_command']:.2f} "
+                    f"yaw_cmd={command['yaw_rate_command']:.2f} "
                     f"length={env.steps}"
                 )
                 episode += 1
                 total_reward = 0.0
                 if episode <= args.episodes:
-                    obs, _ = env.reset(seed=args.seed + episode)
+                    command_name, command = command_for_episode(args, episode - 1)
+                    obs, _ = env.reset(seed=args.seed + episode, options=command)
                     viewer.sync()
                     time.sleep(0.5)
 
@@ -167,8 +229,9 @@ def rollout_episode(
     agent: ActorCritic,
     args: argparse.Namespace,
     seed: int,
+    command: dict[str, float],
 ) -> tuple[np.ndarray, float, dict[str, float], int]:
-    obs, _ = env.reset(seed=seed)
+    obs, _ = env.reset(seed=seed, options=command)
     total_reward = 0.0
     final_info = {"command_distance": 0.0}
     for length in range(1, env.max_steps + 1):
@@ -178,6 +241,19 @@ def rollout_episode(
         if terminated or truncated:
             break
     return obs, total_reward, final_info, length
+
+
+def command_for_episode(
+    args: argparse.Namespace,
+    episode: int,
+) -> tuple[str, dict[str, float]]:
+    if args.command_suite:
+        name, forward, yaw_rate = COMMAND_SUITE[episode % len(COMMAND_SUITE)]
+    else:
+        name = "fixed"
+        forward = float(np.clip(args.forward_command, -1.0, 1.0))
+        yaw_rate = float(np.clip(args.yaw_rate_command, -1.0, 1.0))
+    return name, {"forward_command": forward, "yaw_rate_command": yaw_rate}
 
 
 def policy_action(agent: ActorCritic, obs: np.ndarray, stochastic: bool) -> np.ndarray:

@@ -35,7 +35,7 @@ HEADING_TRACKING_SIGMA_RAD = 0.70
 MIN_CHASSIS_CENTER_HEIGHT_M = 0.008
 BATTERY_SIDE_DOWN_UPRIGHT_LIMIT = -0.25
 BATTERY_SIDE_WARNING_UPRIGHT = -0.10
-ENV_COMMAND_MODE = "forward_yaw_heading_v9"
+ENV_COMMAND_MODE = "forward_yaw_heading_v10"
 
 
 @dataclass
@@ -570,9 +570,10 @@ class BramTripodEnv(gym.Env):
         )
         keep_going_reward = 0.0
         alive_reward = 0.0
-        wrong_way_penalty = soft_penalty_scale * (
-            5.5 * forward_weight * max(0.0, -forward_progress)
-            + 0.75 * yaw_weight * max(0.0, -yaw_progress)
+        command_sign_penalty_scale = 0.70 + 0.30 * soft_penalty_scale
+        wrong_way_penalty = command_sign_penalty_scale * (
+            9.0 * forward_weight * max(0.0, -forward_progress)
+            + 1.25 * yaw_weight * max(0.0, -yaw_progress)
         )
         overspeed_penalty = (
             soft_penalty_scale
@@ -718,6 +719,7 @@ class BramTripodEnv(gym.Env):
             "coaching_ramp": coaching_ramp,
             "polish_ramp": polish_ramp,
             "soft_penalty_scale": soft_penalty_scale,
+            "command_sign_penalty_scale": command_sign_penalty_scale,
             "regularizer_scale": regularizer_scale,
             "alive_quality": alive_quality,
             "battery_orientation_quality": battery_orientation_quality,

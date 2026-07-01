@@ -112,3 +112,87 @@ misc hardware (M3 hardware kit): 15
 
 - Smoke check result.
   Zero action is now clearly bad for active commands, idle is rewarded for staying still, and a 4k PPO smoke completed with positive early curriculum returns but no learned full general gait yet.
+
+6/30 gated joystick-policy environment work
+
+- Added per-command deterministic eval metrics.
+  `metrics.csv` now logs each command separately (`fwd1`, `back1`, yaw signs, half commands, arcs) so average reward cannot hide a broken direction.
+
+- Replaced time-only curriculum with competence gates.
+  Randomized-command training now holds stages until deterministic eval passes required command thresholds for consecutive evals.
+
+- Added weak-command oversampling.
+  The trainer samples failed command families more often after eval, so backward/yaw failures get more rollout data instead of being hidden by easy forward commands.
+
+- Changed command stages to isolated primitives first.
+  The staged order is now forward, backward with forward replay, yaw-left, yaw-right, primitive mix, arcs, then full joystick.
+
+- Rewrote command-sign punishment into `forward_yaw_heading_v10`.
+  Wrong signed movement is punished strongly from the start of the episode, because joystick command obedience matters more than crawl smoothness right now.
+
+- Medium-run result.
+  Gated 50k runs now expose the bottleneck clearly: forward passes and unlocks stage 1, but backward does not become positive within the remaining 50k budget.
+
+- Backward feasibility check.
+  Fixed backward v10 still learns strongly in 50k (`runs/ppo_20260630_185845`, about `1.02 m`), so the issue is curriculum/transfer, not backward being physically impossible.
+
+- Current conclusion.
+  The environment is much better instrumented and stricter, but the one-policy curriculum is not solved yet; the next work should focus on longer stage budgets, warm-start/resume support, or stage-specific optimizer handling so backward can be learned without collapsing the forward primitive.
+
+6/30 follow-up on backward transfer
+
+- Tried weak backward contrast during the forward stage.
+  A small backward sample rate in stage 0 did not stop the policy from learning a mostly command-agnostic forward gait.
+
+- Tried balanced forward/backward from scratch.
+  The policy stayed near stationary over 50k, so the first gate is too hard when both translation signs are equally weighted from random initialization.
+
+- Added `--init-checkpoint` support.
+  The trainer can now initialize a run from a compatible checkpoint while using a fresh optimizer, which is useful for staged experiments and later resume/warm-start work.
+
+- Tried warm-starting from a fixed backward expert.
+  Starting from `runs/ppo_20260630_185845/policy_best.pt` preserved backward initially but did not learn forward; both signs decayed toward non-motion by 50k.
+
+- Tried command-phase observation features.
+  Extra command-times-gait-phase features increased obs dim to 25 but did not improve the 50k translation-sign curriculum and caused less stable eval, so the env was reverted to v10/21-observation.
+
+- Current blocker.
+  Fixed forward and fixed backward both learn, but one shared PPO actor does not yet learn reliable signed translation under the mixed command distribution. The next promising direction is probably stage-specific training mechanics (longer stage budgets, lower LR after unlock, or explicit distillation/replay from fixed-command experts), not more reward scalar tweaking.
+
+6/30 distill-then-anchor breakthrough
+
+- Added explicit expert distillation.
+  `train_ppo.py` can now collect expert rollouts, behavior-clone one command-conditioned actor, and optionally run BC-only to test representation before PPO.
+
+- Added PPO anti-forgetting controls.
+  PPO now supports command-family advantage normalization, expert replay BC, and a frozen post-BC action anchor so updates do not immediately erase learned command modes.
+
+- Verified one compact actor can represent the primitive gaits.
+  Primitive-only BC (`runs/ppo_20260630_200631`) fit four experts to very low MSE and passed forward, backward, yaw-left, and yaw-right without PPO.
+
+- PPO from primitive BC finally stayed stable.
+  Anchored PPO (`runs/ppo_20260630_200728`) kept all four primitives passing through stage 4, proving the previous collapse was PPO forgetting, not model capacity.
+
+- Added optional arc experts.
+  The old v9 arc-forward-left policy still works in v10, so `train_ppo.py` now accepts arc expert checkpoints for distillation and replay.
+
+- Five-expert BC fixed the left-forward arc.
+  Adding the arc-forward-left expert (`runs/ppo_20260630_201507`) raised `arc_fl` from failing to about `0.269`; only `arc_bl` remained slightly weak.
+
+- Reached the first full-suite pass.
+  Anchored PPO from five-expert BC (`runs/ppo_20260630_201558`) advanced to stage 5 and had a full-pass snapshot at update 40: primitives and all arcs cleared their gates.
+
+- Current best visual checkpoint.
+  Use `runs/ppo_20260630_201558/policy_full_pass.pt`; it is copied from the update-40 snapshot because the final scalar-best checkpoint later regressed `arc_bl`.
+
+- Fixed checkpoint scoring.
+  Eval score now includes full-command deficit, so future `policy_best.pt` selection should prefer complete command obedience over higher average distance with one failed command.
+
+- Added single-policy command-suite visualization.
+  `visualize_policy.py --command-suite` cycles idle, forward/back, yaw, half commands, and arcs for one checkpoint instead of relaunching the viewer per command.
+
+- Headless visualizer verification.
+  `runs/ppo_20260630_201558/policy_full_pass.pt` clears the command suite with mean command progress about `0.408`; all 13 commands ran full length with no weak command under the current thresholds.
+
+- Current visual command.
+  Run `.venv-rl/bin/python visualize_policy.py --checkpoint runs/ppo_20260630_201558/policy_full_pass.pt --command-suite --episodes 13` to inspect the general joystick policy in the MuJoCo viewer.
