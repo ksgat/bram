@@ -12,6 +12,10 @@ Right now BRAM can crawl. The next major behavior is self-righting, so the robot
 moving. The goal demo is a side-by-side comparison of the MuJoCo simulation and the real robot crawling, turning, and
 eventually recovering from a flip.
 
+## Demo
+
+![BRAM crawling demo](ezgif-8855bccdc5ed5ebe.gif)
+
 ## Project Structure
 
 ```text
