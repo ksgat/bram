@@ -25,7 +25,9 @@ BRAM
 └── README.md             # Project overview, wiring notes, BOM table, and documentation
 ```
 
+
 # Wiring diagram
+Everything is handwired, no pcb.
 <img width="990" height="537" alt="Screenshot 2026-07-01 at 11 14 12 PM" src="https://github.com/user-attachments/assets/baa2494c-bb71-4c4b-b6cb-f2fee5b389f7" />
 
 
