@@ -1,4 +1,6 @@
 # BRAM!
+<img width="602" height="537" alt="Screenshot 2026-07-01 at 9 38 01 PM" src="https://github.com/user-attachments/assets/5d3faa53-d28b-4857-beb6-91a0eb61cc4c" />
+
 BRAM is the underactuated, three legged, equilateral triangle from hell.
 
 The project is mostly about control. BRAM’s motion is developed in MuJoCo first, where gait search and reinforcement
@@ -9,6 +11,8 @@ robot.
 Right now BRAM can crawl. The next major behavior is self-righting, so the robot can flip itself back over and continue
 moving. The goal demo is a side-by-side comparison of the MuJoCo simulation and the real robot crawling, turning, and
 eventually recovering from a flip.
+
+
 
 ## Bill of Materials
 
