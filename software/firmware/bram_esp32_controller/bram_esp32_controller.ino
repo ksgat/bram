@@ -1,20 +1,44 @@
 #include <Arduino.h>
 
-#define BRAM_ENABLE_BLUEPAD32 1
+#ifndef BRAM_ENABLE_BLUEPAD32
+#define BRAM_ENABLE_BLUEPAD32 0
+#endif
+
+#ifndef BRAM_ENABLE_BLE_COMMANDS
+#define BRAM_ENABLE_BLE_COMMANDS 1
+#endif
 
 #if BRAM_ENABLE_BLUEPAD32
 #include <Bluepad32.h>
 #endif
 
+#if BRAM_ENABLE_BLE_COMMANDS
+#include <BLE2902.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#endif
+
 #include "bram_controller.hpp"
 
-// Demo input switch:
-// false = Xbox/gamepad over BLE via Bluepad32
-// true  = serial commands like: f 0.5 y -0.3
-static constexpr bool kUseSerialInput = true;
+float clipFloat(float value, float low, float high);
+
+// Demo input switch. Leave native BLE commands as the default Arduino path;
+// flip this to true for USB serial bring-up commands like: f 0.5 y -0.3.
+static constexpr bool kUseSerialInput = false;
+static constexpr bool kAllowSerialOverride = true;
 
 static constexpr bool kPrintDebug = true;
 static constexpr bool kUseImuCorrection = false;
+
+static const char* kBleDeviceName = "BRAM";
+static const char* kBleServiceUuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+static const char* kBleRxUuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+static const char* kBleTxUuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+static constexpr float kGamepadAxisScale = 512.0f;
+static constexpr bool kInvertGamepadForward = true;
+static constexpr bool kInvertGamepadYaw = false;
 
 // when i wire
 static constexpr int kFrontServoPin = 4;
@@ -50,6 +74,17 @@ float commandYaw = 0.0f;
 uint32_t lastInputMs = 0;
 uint32_t lastControlMs = 0;
 uint32_t stepIndex = 0;
+bool bleControllerConnected = false;
+bool bleCommandConnected = false;
+
+void setTargetCommand(float forward, float yaw, const char* source) {
+  targetForward = clipFloat(forward, -1.0f, 1.0f);
+  targetYaw = clipFloat(yaw, -1.0f, 1.0f);
+  lastInputMs = millis();
+  if (kPrintDebug) {
+    Serial.printf("%s forward=%.3f yaw=%.3f\n", source, targetForward, targetYaw);
+  }
+}
 
 #if BRAM_ENABLE_BLUEPAD32
 ControllerPtr gamepads[BP32_MAX_GAMEPADS];
@@ -61,6 +96,7 @@ void onConnectedController(ControllerPtr ctl) {
       if (kPrintDebug) {
         Serial.printf("Gamepad connected slot=%d\n", i);
       }
+      bleControllerConnected = true;
       return;
     }
   }
@@ -78,6 +114,7 @@ void onDisconnectedController(ControllerPtr ctl) {
       }
       targetForward = 0.0f;
       targetYaw = 0.0f;
+      bleControllerConnected = false;
       return;
     }
   }
@@ -162,6 +199,16 @@ bool parseSerialCommand(const char* line, float& forward, float& yaw) {
   return false;
 }
 
+void handleCommandLine(const char* line, const char* source) {
+  float forward = 0.0f;
+  float yaw = 0.0f;
+  if (parseSerialCommand(line, forward, yaw)) {
+    setTargetCommand(forward, yaw, source);
+  } else if (kPrintDebug) {
+    Serial.printf("bad %s command: %s\n", source, line);
+  }
+}
+
 void updateSerialInput() {
   static char line[80];
   static size_t length = 0;
@@ -170,18 +217,7 @@ void updateSerialInput() {
     if (c == '\n' || c == '\r') {
       if (length > 0) {
         line[length] = '\0';
-        float forward = 0.0f;
-        float yaw = 0.0f;
-        if (parseSerialCommand(line, forward, yaw)) {
-          targetForward = clipFloat(forward, -1.0f, 1.0f);
-          targetYaw = clipFloat(yaw, -1.0f, 1.0f);
-          lastInputMs = millis();
-          if (kPrintDebug) {
-            Serial.printf("serial forward=%.3f yaw=%.3f\n", targetForward, targetYaw);
-          }
-        } else if (kPrintDebug) {
-          Serial.printf("bad command: %s\n", line);
-        }
+        handleCommandLine(line, "serial");
       }
       length = 0;
     } else if (length + 1 < sizeof(line)) {
@@ -193,7 +229,7 @@ void updateSerialInput() {
 #if BRAM_ENABLE_BLUEPAD32
 ControllerPtr activeGamepad() {
   for (int i = 0; i < BP32_MAX_GAMEPADS; ++i) {
-    if (gamepads[i] && gamepads[i]->isConnected() && gamepads[i]->hasData()) {
+    if (gamepads[i] && gamepads[i]->isConnected()) {
       return gamepads[i];
     }
   }
@@ -206,14 +242,90 @@ void updateBleInput() {
   if (!ctl) return;
 
   // Xbox-style mapping: left stick vertical = forward/back, right stick horizontal = yaw.
-  targetForward = applyDeadband(-static_cast<float>(ctl->axisY()) / 512.0f);
-  targetYaw = applyDeadband(static_cast<float>(ctl->axisRX()) / 512.0f);
-  lastInputMs = millis();
+  const float forwardSign = kInvertGamepadForward ? -1.0f : 1.0f;
+  const float yawSign = kInvertGamepadYaw ? -1.0f : 1.0f;
+  const float forward =
+      applyDeadband(forwardSign * static_cast<float>(ctl->axisY()) / kGamepadAxisScale);
+  const float yaw =
+      applyDeadband(yawSign * static_cast<float>(ctl->axisRX()) / kGamepadAxisScale);
+  setTargetCommand(forward, yaw, "gamepad");
 
   if (ctl->b()) {
-    targetForward = 0.0f;
-    targetYaw = 0.0f;
+    setTargetCommand(0.0f, 0.0f, "gamepad");
   }
+}
+#endif
+
+#if BRAM_ENABLE_BLE_COMMANDS
+BLECharacteristic* bleTxCharacteristic = nullptr;
+
+class BramBleServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer*) override {
+    bleCommandConnected = true;
+    if (kPrintDebug) {
+      Serial.println("BLE command client connected");
+    }
+  }
+
+  void onDisconnect(BLEServer* server) override {
+    bleCommandConnected = false;
+    setTargetCommand(0.0f, 0.0f, "ble");
+    server->startAdvertising();
+    if (kPrintDebug) {
+      Serial.println("BLE command client disconnected; advertising restarted");
+    }
+  }
+};
+
+class BramBleRxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    String value = characteristic->getValue();
+    if (value.length() == 0) return;
+
+    char line[80];
+    const size_t count =
+        value.length() < sizeof(line) - 1 ? value.length() : sizeof(line) - 1;
+    memcpy(line, value.c_str(), count);
+    line[count] = '\0';
+    for (size_t i = 0; i < count; ++i) {
+      if (line[i] == '\n' || line[i] == '\r') {
+        line[i] = '\0';
+        break;
+      }
+    }
+
+    handleCommandLine(line, "ble");
+    if (bleTxCharacteristic) {
+      char reply[80];
+      snprintf(reply, sizeof(reply), "f %.3f y %.3f\n", targetForward, targetYaw);
+      bleTxCharacteristic->setValue(reply);
+      bleTxCharacteristic->notify();
+    }
+  }
+};
+
+void setupBleCommands() {
+  BLEDevice::init(kBleDeviceName);
+  BLEServer* server = BLEDevice::createServer();
+  server->setCallbacks(new BramBleServerCallbacks());
+
+  BLEService* service = server->createService(kBleServiceUuid);
+  BLECharacteristic* rxCharacteristic = service->createCharacteristic(
+      kBleRxUuid, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  bleTxCharacteristic = service->createCharacteristic(
+      kBleTxUuid, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+
+  rxCharacteristic->setCallbacks(new BramBleRxCallbacks());
+  bleTxCharacteristic->addDescriptor(new BLE2902());
+  bleTxCharacteristic->setValue("BRAM ready\n");
+
+  service->start();
+  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(kBleServiceUuid);
+  advertising->setScanResponse(true);
+  BLEDevice::startAdvertising();
+  Serial.println("Input mode: native BLE command service");
+  Serial.println("BLE device name: BRAM");
 }
 #endif
 
@@ -226,8 +338,21 @@ void setupInput() {
 #if BRAM_ENABLE_BLUEPAD32
   if (!kUseSerialInput) {
     BP32.setup(&onConnectedController, &onDisconnectedController);
-    BP32.enableVirtualDevice(false);
-    Serial.println("Bluepad32 BLE gamepad input enabled");
+    Serial.println("Input mode: Bluepad32 BLE gamepad");
+    if (kAllowSerialOverride) {
+      Serial.println("Serial override enabled; send stop or f/y commands over USB.");
+    }
+  } else {
+    Serial.println("Input mode: USB serial");
+  }
+#elif BRAM_ENABLE_BLE_COMMANDS
+  if (!kUseSerialInput) {
+    setupBleCommands();
+    if (kAllowSerialOverride) {
+      Serial.println("Serial override enabled; send stop or f/y commands over USB.");
+    }
+  } else {
+    Serial.println("Input mode: USB serial");
   }
 #else
   Serial.println("Bluepad32 disabled at compile time; serial input only");
@@ -235,10 +360,10 @@ void setupInput() {
 }
 
 void updateInput() {
-  if (kUseSerialInput) {
+  if (kUseSerialInput || kAllowSerialOverride) {
     updateSerialInput();
-    return;
   }
+  if (kUseSerialInput) return;
 #if BRAM_ENABLE_BLUEPAD32
   updateBleInput();
 #endif
@@ -285,9 +410,10 @@ void loop() {
   ++stepIndex;
 
   if (kPrintDebug && stepIndex % 25 == 0) {
-    Serial.printf("cmd f=%.2f y=%.2f action=[%.3f %.3f %.3f]\n",
+    Serial.printf("cmd f=%.2f y=%.2f ble=%d action=[%.3f %.3f %.3f]\n",
                   commandForward,
                   commandYaw,
+                  (bleControllerConnected || bleCommandConnected) ? 1 : 0,
                   servoAction.values[0],
                   servoAction.values[1],
                   servoAction.values[2]);

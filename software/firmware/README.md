@@ -21,15 +21,45 @@ python3 software/firmware/tools/export_bram_firmware.py
 ## Arduino Dependencies
 
 - ESP32 Arduino core.
-- Bluepad32 Arduino library for BLE gamepad input.
 
-Set `kUseSerialInput = true` in the sketch for serial debug mode. Set it to `false` for BLE controller demo mode.
+Native BLE command input is the default Arduino demo path:
 
-If Bluepad32 is not installed and you only want serial mode, set `BRAM_ENABLE_BLUEPAD32` to `0` at the top of the sketch.
+```cpp
+static constexpr bool kUseSerialInput = false;
+```
+
+The XIAO advertises as `BRAM` using a Nordic-UART-style BLE service:
+
+- service UUID: `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
+- RX/write UUID: `6e400002-b5a3-f393-e0a9-e50e24dcca9e`
+- TX/notify UUID: `6e400003-b5a3-f393-e0a9-e50e24dcca9e`
+
+Send the same ASCII commands over BLE RX:
+
+USB serial override is also enabled by default, so you can still send commands while BLE is compiled in:
+
+```text
+f 0.5 y -0.3
+0.5 -0.3
+stop
+```
+
+Set `kUseSerialInput = true` for serial-only bring-up.
+
+The Bluepad32 gamepad hook is left behind `BRAM_ENABLE_BLUEPAD32`, but it is disabled by default. The Arduino Library Manager package named `Bluepad32 for NINA-W10 boards` is for NINA coprocessor boards and does not compile as native ESP32-C3 gamepad input.
+
+## Compile Check
+
+From the repo root:
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C3 software/firmware/bram_esp32_controller
+```
 
 ## Safety Notes
 
-- Power servos from the BEC, not from the ESP32.
-- Tie ESP32 ground and BEC/servo ground together.
+- Power servos directly from the 2S battery only if the servos are rated for `8.4 V`.
+- Power the ESP32/control electronics from the BEC/regulator, not from the servo rail unless the board regulator supports it.
+- Tie battery ground, servo ground, BEC ground, and ESP32 ground together.
 - Start with conservative servo pulse limits in the sketch before testing on the robot.
 - Bench test with servos disconnected from the mechanism first.
