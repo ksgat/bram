@@ -12,6 +12,19 @@ Right now BRAM can crawl. The next major behavior is self-righting, so the robot
 moving. The goal demo is a side-by-side comparison of the MuJoCo simulation and the real robot crawling, turning, and
 eventually recovering from a flip.
 
+## Project Structure
+
+```text
+BRAM
+├── CAD/                  # STEP files for the full assembly and major mechanical parts
+├── software/             # All robot software
+│   ├── firmware/         # ESP32/XIAO firmware for the physical robot
+│   └── gait_discovery/   # MuJoCo model, gait search, RL experiments, and controller exports
+├── BOM.csv               # Bill of materials with parts, costs, and purchase links
+├── JOURNAL.md            # High-level project journal and development summary
+└── README.md             # Project overview, wiring notes, BOM table, and documentation
+```
+
 # Wiring diagram
 <img width="990" height="537" alt="Screenshot 2026-07-01 at 11 14 12 PM" src="https://github.com/user-attachments/assets/baa2494c-bb71-4c4b-b6cb-f2fee5b389f7" />
 
