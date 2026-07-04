@@ -8,6 +8,7 @@ The firmware does not run MuJoCo, PPO, Python, or a neural network. It uses the 
 - `bram_esp32_controller/bram_esp32_controller.ino` is the Arduino sketch.
 - `bram_esp32_controller/bram_controller.hpp` is the runtime controller logic.
 - `bram_esp32_controller/bram_controller_data.hpp` is generated controller data.
+- `bno08x_imu_test/bno08x_imu_test.ino` is a standalone BNO080/BNO085 IMU bring-up sketch for a XIAO ESP32-C3 with SDA on `D4` and SCL on `D5`.
 - `tools/export_bram_firmware.py` regenerates the data header from the gait-discovery export.
 
 ## Regenerate Controller Data
@@ -21,6 +22,7 @@ python3 software/firmware/tools/export_bram_firmware.py
 ## Arduino Dependencies
 
 - ESP32 Arduino core.
+- For the IMU test sketch: `Adafruit BNO08x` from Arduino Library Manager.
 
 Native BLE command input is the default Arduino demo path:
 
@@ -54,6 +56,12 @@ From the repo root:
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C3 software/firmware/bram_esp32_controller
+```
+
+IMU test sketch:
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C3 software/firmware/bno08x_imu_test
 ```
 
 ## Safety Notes
