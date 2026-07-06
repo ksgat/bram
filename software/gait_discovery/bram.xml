@@ -104,7 +104,7 @@
       <geom
                 name="servo_front"
                 type="cylinder"
-                fromto="0.11155642 0.03259235 0 0.09755642 0.00834363 0"
+                fromto="0.11155642 -0.03259235 0 0.09755642 -0.00834363 0"
                 size="0.012"
                 contype="0"
                 conaffinity="0"
@@ -114,7 +114,7 @@
       <geom
                 name="servo_back_left"
                 type="cylinder"
-                fromto="-0.08400401 0.08031452 0 -0.05600401 0.08031452 0"
+                fromto="-0.02755241 0.11290687 0 -0.04155241 0.08865815 0"
                 size="0.012"
                 contype="0"
                 conaffinity="0"
@@ -124,7 +124,7 @@
       <geom
                 name="servo_back_right"
                 type="cylinder"
-                fromto="-0.02755241 -0.11290687 0 -0.04155241 -0.08865815 0"
+                fromto="-0.08400401 -0.08031452 0 -0.05600401 -0.08031452 0"
                 size="0.012"
                 contype="0"
                 conaffinity="0"
@@ -134,8 +134,8 @@
 
       <body
                 name="leg_front"
-                pos="0.10455642 0.02046799 0"
-                euler="0 0 2.61799387799"
+                pos="0.10455642 -0.02046799 0"
+                euler="0 0 -2.61799387799"
             >
         <joint
                     name="hip_front"
@@ -166,8 +166,8 @@
 
       <body
                 name="leg_back_left"
-                pos="-0.07000401 0.08031452 0"
-                euler="0 0 -1.57079632679"
+                pos="-0.03455241 0.10078251 0"
+                euler="0 0 -0.52359877560"
             >
         <joint
                     name="hip_back_left"
@@ -198,8 +198,8 @@
 
       <body
                 name="leg_back_right"
-                pos="-0.03455241 -0.10078251 0"
-                euler="0 0 0.52359877560"
+                pos="-0.07000401 -0.08031452 0"
+                euler="0 0 1.57079632679"
             >
         <joint
                     name="hip_back_right"

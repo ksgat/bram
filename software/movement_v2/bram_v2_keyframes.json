@@ -1,0 +1,45 @@
+{
+  "format": "bram_movement_v2_keyframes",
+  "servo_order": ["front", "back_left", "back_right"],
+  "action_range": [-1.0, 1.0],
+  "rate_hz": 50,
+  "notes": [
+    "Seeded from the current BRAM exported controller's forward command, then reduced to essential postures.",
+    "This copies the paper's posture-interpolation method, not its exact six-servo chair angles."
+  ],
+  "postures": {
+    "neutral": [0.0, 0.0, 0.0],
+    "walk_s0": [-0.688137, 0.068793, -0.179167],
+    "walk_s1": [-0.896743, 0.101874, -0.230616],
+    "walk_s2": [0.052000, -0.130492, -0.185058],
+    "walk_s3": [0.633469, -0.008183, -0.119338],
+    "walk_s4": [0.158251, -0.261252, -0.292972],
+    "walk_s5": [-0.384673, -0.179236, -0.241671],
+    "righting_prep": [0.75, 0.75, 0.75],
+    "righting_load": [-0.85, 0.85, -0.85],
+    "righting_kick": [0.95, -0.95, 0.95],
+    "righting_recover": [0.0, 0.0, 0.0]
+  },
+  "sequences": {
+    "walk_forward": [
+      {"from": "neutral", "to": "walk_s0", "steps": 6},
+      {"from": "walk_s0", "to": "walk_s1", "steps": 6},
+      {"from": "walk_s1", "to": "walk_s2", "steps": 8},
+      {"from": "walk_s2", "to": "walk_s3", "steps": 8},
+      {"from": "walk_s3", "to": "walk_s4", "steps": 8},
+      {"from": "walk_s4", "to": "walk_s5", "steps": 8},
+      {"from": "walk_s5", "to": "walk_s0", "steps": 8}
+    ],
+    "stand_neutral": [
+      {"from": "neutral", "to": "neutral", "steps": 20}
+    ],
+    "self_right_side_seed": [
+      {"from": "neutral", "to": "righting_prep", "steps": 10},
+      {"from": "righting_prep", "to": "righting_load", "steps": 12},
+      {"from": "righting_load", "to": "righting_kick", "steps": 3},
+      {"from": "righting_kick", "to": "righting_recover", "steps": 12},
+      {"from": "righting_recover", "to": "neutral", "steps": 10}
+    ]
+  }
+}
+
