@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("software/gait_discovery/exports/bram_grid_controller_export.json"),
+        default=Path("software/movement_v2/exports/bram_v2_primitives.json"),
     )
     parser.add_argument(
         "--output",
@@ -44,8 +44,8 @@ def render_header(controller: dict[str, Any]) -> str:
         "",
         "namespace bram_data {",
         "",
-        "// Generated from software/gait_discovery/exports/bram_grid_controller_export.json.",
-        "// Do not edit values by hand; rerun software/firmware/tools/export_bram_firmware.py.",
+        "// Generated from a movement_v2 primitive bundle.",
+        "// Do not edit values by hand; rerun software/movement_v2/export_primitive_bundle.py.",
         "",
         f"static constexpr float kDt = {fmt(controller['dt'])}f;",
         f"static constexpr float kResidualLimit = {fmt(controller['residual_limit'])}f;",
@@ -58,6 +58,8 @@ def render_header(controller: dict[str, Any]) -> str:
     ]
     lines.extend(array_1d("kForwardParams", controller["forward_params"]))
     lines.extend(array_1d("kBackwardParams", controller["backward_params"]))
+    lines.extend(array_2d("kForwardTable", controller["forward_table"]))
+    lines.extend(array_2d("kBackwardTable", controller["backward_table"]))
     lines.extend(array_2d("kYawLeftTable", controller["yaw_left_table"]))
     lines.extend(array_2d("kYawRightTable", controller["yaw_right_table"]))
     lines.extend(
@@ -93,6 +95,14 @@ def array_1d(name: str, values: list[float]) -> list[str]:
 
 
 def array_2d(name: str, rows: list[list[float]]) -> list[str]:
+    if not rows:
+        return [
+            f"static constexpr std::size_t {name}Rows = 0;",
+            f"static constexpr float {name}[1][kServoCount] = {{",
+            "  {0.0f, 0.0f, 0.0f},",
+            "};",
+            "",
+        ]
     lines = [
         f"static constexpr std::size_t {name}Rows = {len(rows)};",
         f"static constexpr float {name}[{name}Rows][kServoCount] = {{",

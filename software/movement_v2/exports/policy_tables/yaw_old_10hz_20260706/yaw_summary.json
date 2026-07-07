@@ -1,0 +1,30 @@
+{
+  "yaw_left_table": {
+    "path": "software/movement_v2/exports/policy_tables/yaw_old_10hz_20260706/yaw-left_policy_table.json",
+    "rows": 80,
+    "final_info": {
+      "line_distance": 0.0,
+      "yaw_distance": 1.6363231811407615,
+      "x_distance": 0.21662671119312746,
+      "y_distance": 0.08223104454154176,
+      "planar_speed": 0.11798949503636129,
+      "yaw_rate": 0.0025735301009177647,
+      "height": 0.06550057756808282,
+      "level_tilt_rad": 0.07184415395139514
+    }
+  },
+  "yaw_right_table": {
+    "path": "software/movement_v2/exports/policy_tables/yaw_old_10hz_20260706/yaw-right_policy_table.json",
+    "rows": 80,
+    "final_info": {
+      "line_distance": 0.0,
+      "yaw_distance": 0.5060835802025316,
+      "x_distance": 0.10283778443606606,
+      "y_distance": 0.05111543936905844,
+      "planar_speed": 0.14876639966083977,
+      "yaw_rate": -1.0894858896154247,
+      "height": 0.0912650581839864,
+      "level_tilt_rad": 0.5131102217570122
+    }
+  }
+}

@@ -1,28 +1,39 @@
 # Bram Firmware
 
+The firmware runs movement_v2 actor policies online. It does not run MuJoCo,
+PPO, or Python on-device; it runs exported tiny MLP actor weights from
+`bram_esp32_controller/bram_policy_data.hpp` using the IMU quaternion and recent
+servo-action history.
 
-The firmware does not run MuJoCo, PPO, Python, or a neural network. It uses the exported deterministic controller data from `software/gait_discovery/exports/bram_grid_controller_export.json`: forward/back CPG params, learned yaw action tables, and mixed-arc blend grids.
+Movement V2 defaults to primitive arbitration for demos. If forward/back and yaw are both commanded at the same time, the sketch prioritizes translation and suppresses yaw. Set `kBlendMixedCommands = true` in `bram_esp32_controller/bram_esp32_controller.ino` only after the isolated primitives are reliable enough to re-enable mixed-arc blending.
 
 ## Layout
 
 - `bram_esp32_controller/bram_esp32_controller.ino` is the Arduino sketch.
 - `bram_esp32_controller/bram_controller.hpp` is the runtime controller logic.
-- `bram_esp32_controller/bram_controller_data.hpp` is generated controller data.
+- `bram_esp32_controller/bram_policy_controller.hpp` is the online actor runtime.
+- `bram_esp32_controller/bram_policy_data.hpp` is generated actor weight data.
+- `bram_esp32_controller/bram_controller_data.hpp` is generated fallback controller data.
 - `bno08x_imu_test/bno08x_imu_test.ino` is a standalone BNO080/BNO085 IMU bring-up sketch for a XIAO ESP32-C3 with SDA on `D4` and SCL on `D5`.
-- `tools/export_bram_firmware.py` regenerates the data header from the gait-discovery export.
+- `tools/export_bram_firmware.py` regenerates the data header from a movement_v2 primitive bundle.
 
-## Regenerate Controller Data
+## Regenerate Policy Data
 
 From the repo root:
 
 ```bash
-python3 software/firmware/tools/export_bram_firmware.py
+.venv-rl/bin/python software/movement_v2/export_policy_header.py
 ```
+
+`kUseOnlinePolicies = true` in the sketch selects this path. The older
+`BramController` CPG/table path remains available as a fallback when
+`kUseOnlinePolicies` is set to `false`.
 
 ## Arduino Dependencies
 
 - ESP32 Arduino core.
-- For the IMU test sketch: `Adafruit BNO08x` from Arduino Library Manager.
+- For the IMU test sketch, and for online policy IMU input when
+  `BRAM_ENABLE_BNO08X_POLICY_IMU=1`: `Adafruit BNO08x` from Arduino Library Manager.
 
 Native BLE command input is the default Arduino demo path:
 

@@ -1,0 +1,16 @@
+{
+  "forward_table": {
+    "path": "software/movement_v2/exports/policy_tables/forward_policy_table.json",
+    "rows": 1000,
+    "final_info": {
+      "line_distance": 0.5468668218955858,
+      "yaw_distance": 0.0,
+      "x_distance": 0.5468668218955858,
+      "y_distance": -0.07441700701754524,
+      "planar_speed": 0.03351105593623936,
+      "yaw_rate": 0.06654988702714526,
+      "height": 0.08351103308832639,
+      "level_tilt_rad": 0.078863165961922
+    }
+  }
+}

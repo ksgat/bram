@@ -1,0 +1,16 @@
+{
+  "backward_table": {
+    "path": "software/movement_v2/exports/policy_tables/backward_policy_table.json",
+    "rows": 600,
+    "final_info": {
+      "line_distance": 0.16878511154259654,
+      "yaw_distance": 0.0,
+      "x_distance": -0.16878511154259654,
+      "y_distance": 0.21322483992882282,
+      "planar_speed": 0.049071204952564014,
+      "yaw_rate": -0.13119958542743504,
+      "height": 0.08175423578915174,
+      "level_tilt_rad": 0.12731028686816384
+    }
+  }
+}

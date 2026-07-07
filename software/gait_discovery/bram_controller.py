@@ -33,17 +33,42 @@ PARAM_NAMES = (
     "harmonic_phase_back_right",
 )
 
-DEFAULT_FORWARD_GAIT = Path("runs/gait_search_forward_heading/best_params.json")
-DEFAULT_BACKWARD_GAIT = Path("runs/gait_search_backward_rough/best_params.json")
-DEFAULT_YAW_LEFT_TABLE = Path(
-    "runs/policy_table_yaw_left_planar_300k_8s/yaw-left_policy_table.json"
-)
-DEFAULT_YAW_RIGHT_TABLE = Path(
-    "runs/policy_table_yaw_right_planar_300k_8s_scaled_0p4/yaw-right_policy_table.json"
-)
-DEFAULT_ARC_CONTROLLER = Path(
-    "runs/arc_controller_grid_right_yaw_0p40/arc_controller_20260701_155840/best_arc_controller.json"
-)
+MODULE_DIR = Path(__file__).resolve().parent
+DEFAULT_PUSHED_RUN = MODULE_DIR / "pushed_runs" / "current_policy_20260701"
+DEFAULT_CONTROLLER_EXPORT = MODULE_DIR / "exports" / "bram_grid_controller_export.json"
+DEFAULT_FORWARD_GAIT = DEFAULT_PUSHED_RUN / "gaits" / "forward_best_params.json"
+DEFAULT_BACKWARD_GAIT = DEFAULT_PUSHED_RUN / "gaits" / "backward_best_params.json"
+DEFAULT_YAW_LEFT_TABLE = DEFAULT_PUSHED_RUN / "yaw_tables" / "yaw_left_policy_table.json"
+DEFAULT_YAW_RIGHT_TABLE = DEFAULT_PUSHED_RUN / "yaw_tables" / "yaw_right_policy_table.json"
+DEFAULT_ARC_CONTROLLER: Path | None = None
+
+DEFAULT_ARC_CONTROLLER_DATA: dict[str, Any] = {
+    "version": 1,
+    "kind": "bram_arc_controller",
+    "description": "Fallback V2 primitive composition defaults.",
+    "commands": {
+        "arc_fl": {
+            "base_scale": 1.0,
+            "yaw_scales": [-0.20, -0.20, -0.20],
+            "step_offset": 0,
+        },
+        "arc_fr": {
+            "base_scale": 1.0,
+            "yaw_scales": [-0.50, -0.50, -0.50],
+            "step_offset": 0,
+        },
+        "arc_bl": {
+            "base_scale": 1.0,
+            "yaw_scales": [-0.40, -0.40, -0.40],
+            "step_offset": 0,
+        },
+        "arc_br": {
+            "base_scale": 1.0,
+            "yaw_scales": [-0.40, -0.40, -0.40],
+            "step_offset": 0,
+        },
+    },
+}
 
 HEADING_TRIM_LIMIT = 0.35
 
@@ -52,6 +77,8 @@ HEADING_TRIM_LIMIT = 0.35
 class ControllerExport:
     forward_params: list[float]
     backward_params: list[float]
+    forward_table: list[list[float]]
+    backward_table: list[list[float]]
     yaw_left_table: list[list[float]]
     yaw_right_table: list[list[float]]
     arc_controller: dict[str, Any]
@@ -72,6 +99,8 @@ class BramGridController:
         yaw_left_table: np.ndarray,
         yaw_right_table: np.ndarray,
         arc_controller: dict[str, Any],
+        forward_table: np.ndarray | None = None,
+        backward_table: np.ndarray | None = None,
         dt: float = 0.02,
         residual_limit: float = 0.80,
         arc_yaw_scale: float = 0.65,
@@ -81,6 +110,8 @@ class BramGridController:
     ) -> None:
         self.forward_params = normalize_params(forward_params)
         self.backward_params = normalize_params(backward_params)
+        self.forward_table = normalize_action_table(forward_table)
+        self.backward_table = normalize_action_table(backward_table)
         self.yaw_left_table = np.asarray(yaw_left_table, dtype=np.float32)
         self.yaw_right_table = np.asarray(yaw_right_table, dtype=np.float32)
         self.arc_controller = arc_controller
@@ -99,7 +130,7 @@ class BramGridController:
         backward_gait: Path = DEFAULT_BACKWARD_GAIT,
         yaw_left_table: Path = DEFAULT_YAW_LEFT_TABLE,
         yaw_right_table: Path = DEFAULT_YAW_RIGHT_TABLE,
-        arc_controller: Path = DEFAULT_ARC_CONTROLLER,
+        arc_controller: Path | None = DEFAULT_ARC_CONTROLLER,
         dt: float = 0.02,
         residual_limit: float = 0.80,
         arc_yaw_scale: float = 0.65,
@@ -110,9 +141,11 @@ class BramGridController:
         return cls(
             forward_params=load_gait_params(forward_gait),
             backward_params=load_gait_params(backward_gait),
+            forward_table=None,
+            backward_table=None,
             yaw_left_table=load_action_table(yaw_left_table),
             yaw_right_table=load_action_table(yaw_right_table),
-            arc_controller=load_json(arc_controller),
+            arc_controller=load_arc_controller(arc_controller),
             dt=dt,
             residual_limit=residual_limit,
             arc_yaw_scale=arc_yaw_scale,
@@ -129,6 +162,8 @@ class BramGridController:
         return cls(
             forward_params=np.asarray(payload["forward_params"], dtype=np.float64),
             backward_params=np.asarray(payload["backward_params"], dtype=np.float64),
+            forward_table=maybe_action_table(payload.get("forward_table")),
+            backward_table=maybe_action_table(payload.get("backward_table")),
             yaw_left_table=np.asarray(payload["yaw_left_table"], dtype=np.float32),
             yaw_right_table=np.asarray(payload["yaw_right_table"], dtype=np.float32),
             arc_controller=payload["arc_controller"],
@@ -153,6 +188,8 @@ class BramGridController:
                 "param_names": list(PARAM_NAMES),
                 "forward_params": self.forward_params.astype(float).tolist(),
                 "backward_params": self.backward_params.astype(float).tolist(),
+                "forward_table": self.forward_table.astype(float).tolist(),
+                "backward_table": self.backward_table.astype(float).tolist(),
                 "yaw_left_table": self.yaw_left_table.astype(float).tolist(),
                 "yaw_right_table": self.yaw_right_table.astype(float).tolist(),
                 "arc_controller": self.arc_controller,
@@ -177,6 +214,10 @@ class BramGridController:
         forward = float(np.clip(forward_command, -1.0, 1.0))
         yaw = float(np.clip(yaw_command, -1.0, 1.0))
         t = int(step) * self.dt
+        if abs(yaw) < 0.05 and abs(forward) >= 0.05:
+            table_action = self.translation_action(forward, int(step))
+            if table_action is not None:
+                return table_action
         base = self.base_action(
             forward,
             yaw,
@@ -268,6 +309,17 @@ class BramGridController:
             np.float32
         )
 
+    def translation_action(self, forward_command: float, step: int) -> np.ndarray | None:
+        magnitude = abs(float(forward_command))
+        if magnitude < 1e-6:
+            return np.zeros(3, dtype=np.float32)
+        table = self.forward_table if forward_command > 0.0 else self.backward_table
+        if len(table) == 0:
+            return None
+        return np.clip(magnitude * table[int(step) % len(table)], -1.0, 1.0).astype(
+            np.float32
+        )
+
     def teacher_action(
         self,
         forward_command: float,
@@ -291,6 +343,18 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
 
 
+def load_arc_controller(path: Path | None) -> dict[str, Any]:
+    if path is not None:
+        return load_json(path)
+    if DEFAULT_CONTROLLER_EXPORT.exists():
+        payload = load_json(DEFAULT_CONTROLLER_EXPORT)
+        controller = payload.get("controller", payload)
+        arc_controller = controller.get("arc_controller")
+        if isinstance(arc_controller, dict):
+            return arc_controller
+    return json.loads(json.dumps(DEFAULT_ARC_CONTROLLER_DATA))
+
+
 def load_gait_params(path: Path) -> np.ndarray:
     payload = load_json(path)
     if "vector" in payload:
@@ -304,6 +368,23 @@ def load_action_table(path: Path) -> np.ndarray:
     if "actions" not in payload:
         raise ValueError(f"{path} does not contain an actions table.")
     return np.asarray(payload["actions"], dtype=np.float32)
+
+
+def maybe_action_table(values: Any) -> np.ndarray | None:
+    if values is None:
+        return None
+    return np.asarray(values, dtype=np.float32)
+
+
+def normalize_action_table(table: np.ndarray | None) -> np.ndarray:
+    if table is None:
+        return np.zeros((0, 3), dtype=np.float32)
+    table = np.asarray(table, dtype=np.float32)
+    if table.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    if table.ndim != 2 or table.shape[1] != 3:
+        raise ValueError(f"action tables must have shape (N, 3), got {table.shape}")
+    return np.clip(table, -1.0, 1.0).astype(np.float32)
 
 
 def normalize_params(params: np.ndarray) -> np.ndarray:
@@ -504,7 +585,9 @@ def blend_arc_params(
         ],
         axis=0,
     )
-    step_offset = float(sum(weight * param["step_offset"] for weight, param in zip(weights, params)))
+    step_offset = float(
+        sum(weight * param["step_offset"] for weight, param in zip(weights, params))
+    )
     return {
         "base_scale": base_scale,
         "yaw_scales": [float(value) for value in yaw_scales],

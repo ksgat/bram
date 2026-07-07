@@ -27,14 +27,12 @@ from search_gait import (
 )
 
 
-DEFAULT_FORWARD_GAIT = Path("runs/gait_search_forward_heading/best_params.json")
-DEFAULT_BACKWARD_GAIT = Path("runs/gait_search_backward_rough/best_params.json")
-DEFAULT_YAW_LEFT_TABLE = Path(
-    "runs/policy_table_yaw_left_planar_300k_8s/yaw-left_policy_table.json"
-)
-DEFAULT_YAW_RIGHT_TABLE = Path(
-    "runs/policy_table_yaw_right_planar_300k_8s_scaled_0p4/yaw-right_policy_table.json"
-)
+MODULE_DIR = Path(__file__).resolve().parent
+DEFAULT_PUSHED_RUN = MODULE_DIR / "pushed_runs" / "current_policy_20260701"
+DEFAULT_FORWARD_GAIT = DEFAULT_PUSHED_RUN / "gaits" / "forward_best_params.json"
+DEFAULT_BACKWARD_GAIT = DEFAULT_PUSHED_RUN / "gaits" / "backward_best_params.json"
+DEFAULT_YAW_LEFT_TABLE = DEFAULT_PUSHED_RUN / "yaw_tables" / "yaw_left_policy_table.json"
+DEFAULT_YAW_RIGHT_TABLE = DEFAULT_PUSHED_RUN / "yaw_tables" / "yaw_right_policy_table.json"
 
 COMMAND_SUITE: tuple[tuple[str, float, float], ...] = (
     ("idle", 0.0, 0.0),

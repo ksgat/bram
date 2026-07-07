@@ -151,6 +151,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--episode-seconds", type=float, default=4.0)
     parser.add_argument(
+        "--frame-skip",
+        type=int,
+        default=50,
+        help="MuJoCo sim steps per controller action. 50 matches movement_v2 yaw at 10 Hz.",
+    )
+    parser.add_argument(
+        "--yaw-target-rate-per-command",
+        type=float,
+        default=0.24,
+        help="Yaw scoring target in rad/s for abs(command)=1.0.",
+    )
+    parser.add_argument(
         "--episode-seconds-suite",
         type=str,
         default=None,
@@ -290,7 +302,7 @@ def gait_action(
 def make_env(args: argparse.Namespace) -> BramTripodEnv:
     forward_command, yaw_command = command_for_primitive(args.primitive)
     return BramTripodEnv(
-        frame_skip=10,
+        frame_skip=args.frame_skip,
         episode_seconds=args.episode_seconds,
         randomize_reset=args.randomize_reset,
         domain_randomization=args.domain_randomization,
@@ -356,12 +368,13 @@ def yaw_quality_score(
     useful_progress = max(0.0, progress)
     rewarded_progress = min(useful_progress, target_progress)
     target_error = abs(progress - target_progress)
-    wrong_way_penalty = 420.0 * max(0.0, -progress)
-    underspin_penalty = 95.0 * max(0.0, 0.55 * target_progress - useful_progress)
+    wrong_way_penalty = 520.0 * max(0.0, -progress)
+    underspin_penalty = 190.0 * max(0.0, 0.65 * target_progress - useful_progress)
+    no_turn_penalty = 420.0 * max(0.0, 0.25 * target_progress - useful_progress)
     overspin_penalty = 125.0 * max(0.0, useful_progress - 1.08 * target_progress)
     score = (
-        150.0 * rewarded_progress
-        - 130.0 * target_error
+        520.0 * rewarded_progress
+        - 180.0 * target_error
         - 1600.0 * planar_drift
         - 3600.0 * mean_planar_drift
         - 7000.0 * max_planar_drift
@@ -381,11 +394,12 @@ def yaw_quality_score(
         - 4.0 * mean_abs_action
         - wrong_way_penalty
         - underspin_penalty
+        - no_turn_penalty
         - overspin_penalty
     )
     if terminated:
         remaining_frac = max(0.0, (max_steps - length) / max_steps)
-        score -= 280.0 + 220.0 * remaining_frac
+        score -= 2800.0 + 2200.0 * remaining_frac
     return float(score)
 
 
@@ -499,6 +513,7 @@ def rollout(
         mean_action_delta=float(np.mean(action_deltas)),
         mean_action_accel=float(np.mean(action_accels)),
         mean_abs_action=float(np.mean(abs_actions)),
+        yaw_target_rate_per_command=args.yaw_target_rate_per_command,
     )
     return result
 
@@ -529,12 +544,17 @@ def result_from_info(
     mean_action_delta: float,
     mean_action_accel: float,
     mean_abs_action: float,
+    yaw_target_rate_per_command: float,
 ) -> RolloutResult:
     x_distance = float(info.get("x_distance", 0.0))
     y_distance = float(info.get("y_distance", 0.0))
     line_distance = float(info.get("line_distance", 0.0))
     yaw_distance = float(info.get("yaw_distance", 0.0))
-    target_yaw_distance = abs(float(info.get("desired_yaw_rate", 0.0))) * elapsed_time
+    target_yaw_distance = (
+        abs(float(info.get("yaw_rate_command", 0.0)))
+        * float(yaw_target_rate_per_command)
+        * elapsed_time
+    )
     yaw_distance_error = yaw_distance - target_yaw_distance
     cross_track_error = float(info.get("cross_track_error", 0.0))
     heading_error = float(info.get("heading_error", 0.0))

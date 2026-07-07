@@ -8,8 +8,17 @@
 #define BRAM_ENABLE_BLE_COMMANDS 1
 #endif
 
+#ifndef BRAM_ENABLE_BNO08X_POLICY_IMU
+#define BRAM_ENABLE_BNO08X_POLICY_IMU 0
+#endif
+
 #if BRAM_ENABLE_BLUEPAD32
 #include <Bluepad32.h>
+#endif
+
+#if BRAM_ENABLE_BNO08X_POLICY_IMU
+#include <Wire.h>
+#include <Adafruit_BNO08x.h>
 #endif
 
 #if BRAM_ENABLE_BLE_COMMANDS
@@ -20,6 +29,7 @@
 #endif
 
 #include "bram_controller.hpp"
+#include "bram_policy_controller.hpp"
 
 float clipFloat(float value, float low, float high);
 
@@ -30,6 +40,8 @@ static constexpr bool kAllowSerialOverride = true;
 
 static constexpr bool kPrintDebug = true;
 static constexpr bool kUseImuCorrection = false;
+static constexpr bool kUseOnlinePolicies = true;
+static constexpr bool kUseBaseControllerForYaw = true;
 
 static const char* kBleDeviceName = "BRAM";
 static const char* kBleServiceUuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
@@ -60,12 +72,16 @@ static constexpr bool kServoInvert[3] = {false, false, false};
 static constexpr int kPwmHz = 50;
 static constexpr int kPwmResolutionBits = 16;
 static constexpr int kPwmChannels[3] = {0, 1, 2};
-static constexpr uint32_t kControlPeriodMs = 20;
+static constexpr uint32_t kControlPeriodMs = 50;
 static constexpr uint32_t kInputTimeoutMs = 600;
 static constexpr float kDeadband = 0.08f;
 static constexpr float kCommandSlewPerTick = 0.08f;
+static constexpr bool kBlendMixedCommands = false;
+static constexpr bool kPrioritizeTranslationWhenMixed = true;
+static constexpr uint32_t kBaseYawHoldTicks = 2;
 
 bram::BramController controller;
+bram::BramPolicyController policyController;
 
 float targetForward = 0.0f;
 float targetYaw = 0.0f;
@@ -76,6 +92,85 @@ uint32_t lastControlMs = 0;
 uint32_t stepIndex = 0;
 bool bleControllerConnected = false;
 bool bleCommandConnected = false;
+
+#if BRAM_ENABLE_BNO08X_POLICY_IMU
+#ifndef D4
+#define D4 6
+#endif
+
+#ifndef D5
+#define D5 7
+#endif
+
+static constexpr int kPolicyImuSdaPin = D4;
+static constexpr int kPolicyImuSclPin = D5;
+static constexpr int kPolicyImuResetPin = -1;
+static constexpr uint32_t kPolicyImuI2cHz = 400000;
+static constexpr uint32_t kPolicyImuReportIntervalUs = 10000;
+
+Adafruit_BNO08x policyBno08x(kPolicyImuResetPin);
+sh2_SensorValue_t policySensorValue;
+float latestPolicyQuat[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+bool policyImuReady = false;
+bool policyImuHasQuat = false;
+
+bool enablePolicyImuReports() {
+  if (!policyBno08x.enableReport(SH2_ROTATION_VECTOR, kPolicyImuReportIntervalUs)) {
+    Serial.println("Could not enable BNO08x rotation vector for policy");
+    return false;
+  }
+  return true;
+}
+
+void setupPolicyImu() {
+  Wire.begin(kPolicyImuSdaPin, kPolicyImuSclPin);
+  Wire.setClock(kPolicyImuI2cHz);
+  if (!policyBno08x.begin_I2C(BNO08x_I2CADDR_DEFAULT, &Wire) &&
+      !policyBno08x.begin_I2C(0x4B, &Wire)) {
+    Serial.println("BNO08x policy IMU not found; online policies will see identity quat");
+    policyImuReady = false;
+    return;
+  }
+  policyImuReady = enablePolicyImuReports();
+  Serial.println(policyImuReady ? "BNO08x policy IMU ready" : "BNO08x policy IMU report setup failed");
+}
+
+void updatePolicyImu() {
+  if (!policyImuReady) return;
+  if (policyBno08x.wasReset()) {
+    enablePolicyImuReports();
+  }
+  while (policyBno08x.getSensorEvent(&policySensorValue)) {
+    if (policySensorValue.sensorId == SH2_ROTATION_VECTOR) {
+      latestPolicyQuat[0] = policySensorValue.un.rotationVector.real;
+      latestPolicyQuat[1] = policySensorValue.un.rotationVector.i;
+      latestPolicyQuat[2] = policySensorValue.un.rotationVector.j;
+      latestPolicyQuat[3] = policySensorValue.un.rotationVector.k;
+      policyImuHasQuat = true;
+    }
+  }
+}
+#else
+void setupPolicyImu() {}
+void updatePolicyImu() {}
+#endif
+
+bool readPolicyImuQuaternion(float quatWxyz[4]) {
+  updatePolicyImu();
+#if BRAM_ENABLE_BNO08X_POLICY_IMU
+  if (policyImuHasQuat) {
+    for (int i = 0; i < 4; ++i) {
+      quatWxyz[i] = latestPolicyQuat[i];
+    }
+    return true;
+  }
+#endif
+  quatWxyz[0] = 1.0f;
+  quatWxyz[1] = 0.0f;
+  quatWxyz[2] = 0.0f;
+  quatWxyz[3] = 0.0f;
+  return false;
+}
 
 void setTargetCommand(float forward, float yaw, const char* source) {
   targetForward = clipFloat(forward, -1.0f, 1.0f);
@@ -137,6 +232,24 @@ float applyDeadband(float value) {
 float slew(float current, float target) {
   const float delta = clipFloat(target - current, -kCommandSlewPerTick, kCommandSlewPerTick);
   return current + delta;
+}
+
+void selectPrimitiveCommand(float forward,
+                            float yaw,
+                            float& primitiveForward,
+                            float& primitiveYaw) {
+  primitiveForward = forward;
+  primitiveYaw = yaw;
+  const bool forwardActive = fabsf(forward) > 1.0e-3f;
+  const bool yawActive = fabsf(yaw) > 1.0e-3f;
+  if (!forwardActive || !yawActive || kBlendMixedCommands) {
+    return;
+  }
+  if (kPrioritizeTranslationWhenMixed) {
+    primitiveYaw = 0.0f;
+  } else {
+    primitiveForward = 0.0f;
+  }
 }
 
 int actionToPulseUs(float action, int servoIndex) {
@@ -371,6 +484,7 @@ void updateInput() {
 
 void setup() {
   setupInput();
+  setupPolicyImu();
   attachServoPwm();
   bram::ServoAction neutral{};
   writeServos(neutral);
@@ -404,15 +518,32 @@ void loop() {
     // yawRate = measured_gyro_z_rad_s;
   }
 
+  float primitiveForward = 0.0f;
+  float primitiveYaw = 0.0f;
+  selectPrimitiveCommand(commandForward, commandYaw, primitiveForward, primitiveYaw);
+
+  float policyQuat[4];
+  readPolicyImuQuaternion(policyQuat);
+
+  const bool yawOnly =
+      fabsf(primitiveYaw) >= 0.05f && fabsf(primitiveForward) < 0.05f;
+  const bool useBaseController =
+      !kUseOnlinePolicies || (kUseBaseControllerForYaw && yawOnly);
+  const uint32_t controllerStep =
+      yawOnly ? stepIndex / kBaseYawHoldTicks : stepIndex;
   const bram::ServoAction servoAction =
-      controller.action(commandForward, commandYaw, stepIndex, headingError, yawRate);
+      useBaseController
+          ? controller.action(primitiveForward, primitiveYaw, controllerStep, headingError, yawRate)
+          : policyController.action(primitiveForward, primitiveYaw, policyQuat);
   writeServos(servoAction);
   ++stepIndex;
 
   if (kPrintDebug && stepIndex % 25 == 0) {
-    Serial.printf("cmd f=%.2f y=%.2f ble=%d action=[%.3f %.3f %.3f]\n",
+    Serial.printf("cmd f=%.2f y=%.2f prim f=%.2f y=%.2f ble=%d action=[%.3f %.3f %.3f]\n",
                   commandForward,
                   commandYaw,
+                  primitiveForward,
+                  primitiveYaw,
                   (bleControllerConnected || bleCommandConnected) ? 1 : 0,
                   servoAction.values[0],
                   servoAction.values[1],

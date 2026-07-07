@@ -5,6 +5,7 @@
   "rate_hz": 50,
   "notes": [
     "Seeded from the current BRAM exported controller's forward command, then reduced to essential postures.",
+    "Backward seed postures are sampled from the separately searched backward CPG primitive.",
     "This copies the paper's posture-interpolation method, not its exact six-servo chair angles."
   ],
   "postures": {
@@ -15,6 +16,12 @@
     "walk_s3": [0.633469, -0.008183, -0.119338],
     "walk_s4": [0.158251, -0.261252, -0.292972],
     "walk_s5": [-0.384673, -0.179236, -0.241671],
+    "back_s0": [0.395677, -0.164500, -0.364790],
+    "back_s1": [0.519453, -0.542234, -0.441882],
+    "back_s2": [-0.204545, -0.211652, -0.163899],
+    "back_s3": [-0.902759, -0.164500, -0.404291],
+    "back_s4": [-0.747771, -0.117348, -0.456178],
+    "back_s5": [-0.173333, 0.213234, -0.138694],
     "righting_prep": [0.75, 0.75, 0.75],
     "righting_load": [-0.85, 0.85, -0.85],
     "righting_kick": [0.95, -0.95, 0.95],
@@ -30,6 +37,15 @@
       {"from": "walk_s4", "to": "walk_s5", "steps": 8},
       {"from": "walk_s5", "to": "walk_s0", "steps": 8}
     ],
+    "walk_backward": [
+      {"from": "neutral", "to": "back_s0", "steps": 6},
+      {"from": "back_s0", "to": "back_s1", "steps": 8},
+      {"from": "back_s1", "to": "back_s2", "steps": 8},
+      {"from": "back_s2", "to": "back_s3", "steps": 8},
+      {"from": "back_s3", "to": "back_s4", "steps": 8},
+      {"from": "back_s4", "to": "back_s5", "steps": 8},
+      {"from": "back_s5", "to": "back_s0", "steps": 8}
+    ],
     "stand_neutral": [
       {"from": "neutral", "to": "neutral", "steps": 20}
     ],
@@ -42,4 +58,3 @@
     ]
   }
 }
-

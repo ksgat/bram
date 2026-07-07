@@ -146,7 +146,7 @@
         <geom
                     name="front_leg_tube"
                     type="capsule"
-                    fromto="0 0 0 -0.136 0 -0.063"
+                    fromto="0 0 0 -0.13610591 0 -0.06304904"
                     size="0.0047625"
                     mass="0.011"
                     friction="1.2 0.04 0.005"
@@ -155,7 +155,7 @@
         <geom
                     name="front_rubber_tip"
                     type="cylinder"
-                    fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+                    fromto="-0.11432896 0 -0.05296120 -0.13610591 0 -0.06304904"
                     size="0.0065"
                     mass="0.003"
                     condim="4"
@@ -178,7 +178,7 @@
         <geom
                     name="back_left_leg_tube"
                     type="capsule"
-                    fromto="0 0 0 -0.136 0 -0.063"
+                    fromto="0 0 0 -0.13610591 0 -0.06304904"
                     size="0.0047625"
                     mass="0.011"
                     friction="1.2 0.04 0.005"
@@ -187,7 +187,7 @@
         <geom
                     name="back_left_rubber_tip"
                     type="cylinder"
-                    fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+                    fromto="-0.11432896 0 -0.05296120 -0.13610591 0 -0.06304904"
                     size="0.0065"
                     mass="0.003"
                     condim="4"
@@ -210,7 +210,7 @@
         <geom
                     name="back_right_leg_tube"
                     type="capsule"
-                    fromto="0 0 0 -0.136 0 -0.063"
+                    fromto="0 0 0 -0.13610591 0 -0.06304904"
                     size="0.0047625"
                     mass="0.011"
                     friction="1.2 0.04 0.005"
@@ -219,7 +219,7 @@
         <geom
                     name="back_right_rubber_tip"
                     type="cylinder"
-                    fromto="-0.12511152 0 -0.05795609 -0.14688848 0 -0.06804391"
+                    fromto="-0.11432896 0 -0.05296120 -0.13610591 0 -0.06304904"
                     size="0.0065"
                     mass="0.003"
                     condim="4"

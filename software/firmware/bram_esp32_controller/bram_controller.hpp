@@ -28,7 +28,26 @@ class BramController {
                      float yawRate = 0.0f) const {
     const float forward = clip(forwardCommand, -1.0f, 1.0f);
     const float yaw = clip(yawCommand, -1.0f, 1.0f);
+    const float forwardMag = std::fabs(forward);
+    const float yawMag = std::fabs(yaw);
     const float t = static_cast<float>(step) * bram_data::kDt;
+
+    if (forwardMag < 0.05f && yawMag < 0.05f) {
+      return ServoAction{};
+    }
+    if (yawMag < 0.05f) {
+      if (translationTableRows(forward) > 0) {
+        return translationAction(forward, step);
+      }
+      float base[3];
+      baseAction(forward, yaw, t, headingError, yawRate, base);
+      return servoActionFromArray(base);
+    }
+    if (forwardMag < 0.05f) {
+      float yawValues[3];
+      yawAction(yaw, step, yawValues);
+      return servoActionFromArray(yawValues);
+    }
 
     float base[3];
     baseAction(forward, yaw, t, headingError, yawRate, base);
@@ -152,6 +171,37 @@ class BramController {
   static int positiveMod(int64_t value, int mod) {
     int result = static_cast<int>(value % mod);
     return result < 0 ? result + mod : result;
+  }
+
+  static ServoAction servoActionFromArray(const float values[3]) {
+    ServoAction out{};
+    for (std::size_t i = 0; i < 3; ++i) {
+      out.values[i] = clip(values[i], -1.0f, 1.0f);
+    }
+    return out;
+  }
+
+  static ServoAction translationAction(float forwardCommand, std::uint32_t step) {
+    const float magnitude = std::fabs(forwardCommand);
+    ServoAction out{};
+    if (magnitude < 1.0e-6f) {
+      return out;
+    }
+    const bool forward = forwardCommand > 0.0f;
+    const std::size_t rows =
+        forward ? bram_data::kForwardTableRows : bram_data::kBackwardTableRows;
+    const int row = positiveMod(step, static_cast<int>(rows));
+    for (std::size_t i = 0; i < 3; ++i) {
+      const float value = forward ? bram_data::kForwardTable[row][i]
+                                  : bram_data::kBackwardTable[row][i];
+      out.values[i] = clip(magnitude * value, -1.0f, 1.0f);
+    }
+    return out;
+  }
+
+  static std::size_t translationTableRows(float forwardCommand) {
+    return forwardCommand > 0.0f ? bram_data::kForwardTableRows
+                                 : bram_data::kBackwardTableRows;
   }
 
   static void yawAction(float yawCommand, int64_t step, float out[3]) {
