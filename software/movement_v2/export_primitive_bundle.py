@@ -25,8 +25,11 @@ from export_bram_firmware import render_header  # noqa: E402
 DEFAULT_PUSHED_RUN = GAIT_DISCOVERY_DIR / "pushed_runs" / "current_policy_20260701"
 DEFAULT_FORWARD_GAIT = DEFAULT_PUSHED_RUN / "gaits" / "forward_best_params.json"
 DEFAULT_BACKWARD_GAIT = DEFAULT_PUSHED_RUN / "gaits" / "backward_best_params.json"
-DEFAULT_YAW_LEFT_TABLE = DEFAULT_PUSHED_RUN / "yaw_tables" / "yaw_left_policy_table.json"
-DEFAULT_YAW_RIGHT_TABLE = DEFAULT_PUSHED_RUN / "yaw_tables" / "yaw_right_policy_table.json"
+DEFAULT_YAW_TABLE_DIR = (
+    MOVEMENT_V2_DIR / "exports" / "yaw_tables" / "gait_discovery_planar_40hz_20260711"
+)
+DEFAULT_YAW_LEFT_TABLE = DEFAULT_YAW_TABLE_DIR / "yaw-left_policy_table_40hz_scale0p35.json"
+DEFAULT_YAW_RIGHT_TABLE = DEFAULT_YAW_TABLE_DIR / "yaw-right_policy_table_40hz_scale1p60.json"
 DEFAULT_OUT = MOVEMENT_V2_DIR / "exports" / "bram_v2_primitives.json"
 DEFAULT_FIRMWARE_HEADER = (
     REPO_ROOT
@@ -47,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backward-table", type=Path, default=None)
     parser.add_argument("--yaw-left-table", type=Path, default=DEFAULT_YAW_LEFT_TABLE)
     parser.add_argument("--yaw-right-table", type=Path, default=DEFAULT_YAW_RIGHT_TABLE)
+    parser.add_argument("--yaw-left-hz", type=float, default=None)
+    parser.add_argument("--yaw-right-hz", type=float, default=None)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--firmware-header", type=Path, default=None)
     parser.add_argument("--dt", type=float, default=0.02)
@@ -85,8 +90,12 @@ def build_payload(
 ) -> dict[str, Any]:
     forward_params = load_gait_params(forward_gait)
     backward_params = load_gait_params(backward_gait)
-    yaw_left_table = load_action_table(args.yaw_left_table)
-    yaw_right_table = load_action_table(args.yaw_right_table)
+    yaw_left_table, yaw_left_hz = load_action_table_with_hz(args.yaw_left_table)
+    yaw_right_table, yaw_right_hz = load_action_table_with_hz(args.yaw_right_table)
+    if args.yaw_left_hz is not None:
+        yaw_left_hz = float(args.yaw_left_hz)
+    if args.yaw_right_hz is not None:
+        yaw_right_hz = float(args.yaw_right_hz)
     forward_table = load_or_derive_translation_table(
         args.forward_table,
         forward_params,
@@ -109,6 +118,8 @@ def build_payload(
         "backward_table": backward_table.astype(float).tolist(),
         "yaw_left_table": yaw_left_table.astype(float).tolist(),
         "yaw_right_table": yaw_right_table.astype(float).tolist(),
+        "yaw_left_hz": float(yaw_left_hz),
+        "yaw_right_hz": float(yaw_right_hz),
         "arc_controller": primitive_only_arc_controller(),
         "dt": float(args.dt),
         "residual_limit": float(args.residual_limit),
@@ -150,6 +161,20 @@ def primitive_only_arc_controller() -> dict[str, Any]:
             "arc_br": dict(zero),
         },
     }
+
+
+def load_action_table_with_hz(path: Path) -> tuple[np.ndarray, float]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "actions" not in payload:
+        raise ValueError(f"{path} does not contain an actions table.")
+    actions = np.asarray(payload["actions"], dtype=np.float32)
+    control_hz = float(payload.get("control_hz", 0.0))
+    if not control_hz > 0.0:
+        dt = float(payload.get("dt", 0.0))
+        if not dt > 0.0:
+            raise ValueError(f"{path} must define control_hz or dt.")
+        control_hz = 1.0 / dt
+    return actions, control_hz
 
 
 def load_or_derive_translation_table(

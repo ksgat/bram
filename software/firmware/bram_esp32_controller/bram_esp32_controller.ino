@@ -72,13 +72,13 @@ static constexpr bool kServoInvert[3] = {false, false, false};
 static constexpr int kPwmHz = 50;
 static constexpr int kPwmResolutionBits = 16;
 static constexpr int kPwmChannels[3] = {0, 1, 2};
-static constexpr uint32_t kControlPeriodMs = 50;
+static constexpr uint32_t kControlPeriodMs = 25;
 static constexpr uint32_t kInputTimeoutMs = 600;
 static constexpr float kDeadband = 0.08f;
 static constexpr float kCommandSlewPerTick = 0.08f;
 static constexpr bool kBlendMixedCommands = false;
 static constexpr bool kPrioritizeTranslationWhenMixed = true;
-static constexpr uint32_t kBaseYawHoldTicks = 2;
+static constexpr uint32_t kPolicyHoldTicks = 2;
 
 bram::BramController controller;
 bram::BramPolicyController policyController;
@@ -92,6 +92,9 @@ uint32_t lastControlMs = 0;
 uint32_t stepIndex = 0;
 bool bleControllerConnected = false;
 bool bleCommandConnected = false;
+bram::ServoAction cachedPolicyAction{};
+bool cachedPolicyActionValid = false;
+int cachedPolicyPrimitiveKey = -1;
 
 #if BRAM_ENABLE_BNO08X_POLICY_IMU
 #ifndef D4
@@ -250,6 +253,16 @@ void selectPrimitiveCommand(float forward,
   } else {
     primitiveForward = 0.0f;
   }
+}
+
+int primitiveKey(float forward, float yaw) {
+  if (fabsf(forward) >= 0.05f) {
+    return forward > 0.0f ? 1 : 2;
+  }
+  if (fabsf(yaw) >= 0.05f) {
+    return yaw > 0.0f ? 3 : 4;
+  }
+  return 0;
 }
 
 int actionToPulseUs(float action, int servoIndex) {
@@ -527,18 +540,32 @@ void loop() {
 
   const bool yawOnly =
       fabsf(primitiveYaw) >= 0.05f && fabsf(primitiveForward) < 0.05f;
+  const bool primitiveIdle =
+      fabsf(primitiveYaw) < 0.05f && fabsf(primitiveForward) < 0.05f;
   const bool useBaseController =
       !kUseOnlinePolicies || (kUseBaseControllerForYaw && yawOnly);
-  const uint32_t controllerStep =
-      yawOnly ? stepIndex / kBaseYawHoldTicks : stepIndex;
-  const bram::ServoAction servoAction =
-      useBaseController
-          ? controller.action(primitiveForward, primitiveYaw, controllerStep, headingError, yawRate)
-          : policyController.action(primitiveForward, primitiveYaw, policyQuat);
+  bram::ServoAction servoAction{};
+  if (useBaseController) {
+    servoAction = controller.action(primitiveForward, primitiveYaw, stepIndex, headingError, yawRate);
+    cachedPolicyActionValid = false;
+    cachedPolicyPrimitiveKey = -1;
+  } else {
+    const int key = primitiveKey(primitiveForward, primitiveYaw);
+    const bool primitiveChanged = key != cachedPolicyPrimitiveKey;
+    const bool updatePolicy =
+        primitiveIdle || !cachedPolicyActionValid || primitiveChanged ||
+        (stepIndex % kPolicyHoldTicks == 0);
+    if (updatePolicy) {
+      cachedPolicyAction = policyController.action(primitiveForward, primitiveYaw, policyQuat);
+      cachedPolicyActionValid = true;
+      cachedPolicyPrimitiveKey = key;
+    }
+    servoAction = cachedPolicyAction;
+  }
   writeServos(servoAction);
   ++stepIndex;
 
-  if (kPrintDebug && stepIndex % 25 == 0) {
+  if (kPrintDebug && stepIndex % 40 == 0) {
     Serial.printf("cmd f=%.2f y=%.2f prim f=%.2f y=%.2f ble=%d action=[%.3f %.3f %.3f]\n",
                   commandForward,
                   commandYaw,

@@ -1,0 +1,44 @@
+[
+  {
+    "direction": "yaw-right",
+    "seed": 17,
+    "params_path": "/Users/gabrielamare/Downloads/bram/software/movement_v2/runs/yaw_base_residual/yaw_base_residual_20260712_005048/search/yaw-right_seed17/best_params.json",
+    "score": 289.03876250124756,
+    "yaw_distance": 2.15980737799815,
+    "target_fraction": 0.9867759783304871,
+    "final_drift": 0.04078605931614582,
+    "mean_drift": 0.02852248774258452,
+    "max_drift": 0.05567131997054958,
+    "gate_pass": false,
+    "terminated": false,
+    "selected": false
+  },
+  {
+    "direction": "yaw-right",
+    "seed": 41,
+    "params_path": "/Users/gabrielamare/Downloads/bram/software/movement_v2/runs/yaw_base_residual/yaw_base_residual_20260712_005048/search/yaw-right_seed41/best_params.json",
+    "score": 570.7110473517066,
+    "yaw_distance": 2.2775798914604857,
+    "target_fraction": 1.038191582726693,
+    "final_drift": 0.019581304050417442,
+    "mean_drift": 0.028817860337895712,
+    "max_drift": 0.0476197775503658,
+    "gate_pass": false,
+    "terminated": false,
+    "selected": false
+  },
+  {
+    "direction": "yaw-right",
+    "seed": 73,
+    "params_path": "/Users/gabrielamare/Downloads/bram/software/movement_v2/runs/yaw_base_residual/yaw_base_residual_20260712_005048/search/yaw-right_seed73/best_params.json",
+    "score": 643.9485069808263,
+    "yaw_distance": 1.9503551488212474,
+    "target_fraction": 0.8790432345039488,
+    "final_drift": 0.03276530148627535,
+    "mean_drift": 0.020217996907684263,
+    "max_drift": 0.04513345511067303,
+    "gate_pass": false,
+    "terminated": false,
+    "selected": true
+  }
+]

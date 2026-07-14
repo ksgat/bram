@@ -81,6 +81,8 @@ class ControllerExport:
     backward_table: list[list[float]]
     yaw_left_table: list[list[float]]
     yaw_right_table: list[list[float]]
+    yaw_left_hz: float
+    yaw_right_hz: float
     arc_controller: dict[str, Any]
     dt: float
     residual_limit: float
@@ -101,6 +103,8 @@ class BramGridController:
         arc_controller: dict[str, Any],
         forward_table: np.ndarray | None = None,
         backward_table: np.ndarray | None = None,
+        yaw_left_hz: float | None = None,
+        yaw_right_hz: float | None = None,
         dt: float = 0.02,
         residual_limit: float = 0.80,
         arc_yaw_scale: float = 0.65,
@@ -114,6 +118,9 @@ class BramGridController:
         self.backward_table = normalize_action_table(backward_table)
         self.yaw_left_table = np.asarray(yaw_left_table, dtype=np.float32)
         self.yaw_right_table = np.asarray(yaw_right_table, dtype=np.float32)
+        default_hz = 1.0 / max(1.0e-6, float(dt))
+        self.yaw_left_hz = float(yaw_left_hz if yaw_left_hz is not None else default_hz)
+        self.yaw_right_hz = float(yaw_right_hz if yaw_right_hz is not None else default_hz)
         self.arc_controller = arc_controller
         self.dt = float(dt)
         self.residual_limit = float(residual_limit)
@@ -166,6 +173,8 @@ class BramGridController:
             backward_table=maybe_action_table(payload.get("backward_table")),
             yaw_left_table=np.asarray(payload["yaw_left_table"], dtype=np.float32),
             yaw_right_table=np.asarray(payload["yaw_right_table"], dtype=np.float32),
+            yaw_left_hz=float(payload.get("yaw_left_hz", 1.0 / float(payload.get("dt", 0.02)))),
+            yaw_right_hz=float(payload.get("yaw_right_hz", 1.0 / float(payload.get("dt", 0.02)))),
             arc_controller=payload["arc_controller"],
             dt=float(payload.get("dt", 0.02)),
             residual_limit=float(payload.get("residual_limit", 0.80)),
@@ -192,6 +201,8 @@ class BramGridController:
                 "backward_table": self.backward_table.astype(float).tolist(),
                 "yaw_left_table": self.yaw_left_table.astype(float).tolist(),
                 "yaw_right_table": self.yaw_right_table.astype(float).tolist(),
+                "yaw_left_hz": self.yaw_left_hz,
+                "yaw_right_hz": self.yaw_right_hz,
                 "arc_controller": self.arc_controller,
                 "dt": self.dt,
                 "residual_limit": self.residual_limit,
@@ -218,6 +229,8 @@ class BramGridController:
             table_action = self.translation_action(forward, int(step))
             if table_action is not None:
                 return table_action
+        if abs(forward) < 0.05 and abs(yaw) >= 0.05:
+            return self.yaw_action_at_time(yaw, t)
         base = self.base_action(
             forward,
             yaw,
@@ -309,6 +322,21 @@ class BramGridController:
             np.float32
         )
 
+    def yaw_action_at_time(self, yaw_command: float, t: float) -> np.ndarray:
+        magnitude = abs(float(yaw_command))
+        if magnitude < 1e-6:
+            return np.zeros(3, dtype=np.float32)
+        left = yaw_command > 0.0
+        table = self.yaw_left_table if left else self.yaw_right_table
+        hz = self.yaw_left_hz if left else self.yaw_right_hz
+        if len(table) == 0 or hz <= 0.0:
+            return np.zeros(3, dtype=np.float32)
+        return np.clip(
+            magnitude * sample_action_table_at_time(table, hz, float(t)),
+            -1.0,
+            1.0,
+        ).astype(np.float32)
+
     def translation_action(self, forward_command: float, step: int) -> np.ndarray | None:
         magnitude = abs(float(forward_command))
         if magnitude < 1e-6:
@@ -385,6 +413,20 @@ def normalize_action_table(table: np.ndarray | None) -> np.ndarray:
     if table.ndim != 2 or table.shape[1] != 3:
         raise ValueError(f"action tables must have shape (N, 3), got {table.shape}")
     return np.clip(table, -1.0, 1.0).astype(np.float32)
+
+
+def sample_action_table_at_time(table: np.ndarray, hz: float, t: float) -> np.ndarray:
+    table = np.asarray(table, dtype=np.float32)
+    if table.shape[0] == 0:
+        return np.zeros(3, dtype=np.float32)
+    duration = table.shape[0] / float(hz)
+    phase = float(t) % duration
+    index = phase * float(hz)
+    low_index = int(np.floor(index + 1.0e-9))
+    low = low_index % table.shape[0]
+    high = (low + 1) % table.shape[0]
+    alpha = float(np.clip(index - low_index, 0.0, 1.0))
+    return ((1.0 - alpha) * table[low] + alpha * table[high]).astype(np.float32)
 
 
 def normalize_params(params: np.ndarray) -> np.ndarray:

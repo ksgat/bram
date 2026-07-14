@@ -48,6 +48,8 @@ def render_header(controller: dict[str, Any]) -> str:
         "// Do not edit values by hand; rerun software/movement_v2/export_primitive_bundle.py.",
         "",
         f"static constexpr float kDt = {fmt(controller['dt'])}f;",
+        f"static constexpr float kYawLeftHz = {fmt(table_hz(controller, 'yaw_left_hz'))}f;",
+        f"static constexpr float kYawRightHz = {fmt(table_hz(controller, 'yaw_right_hz'))}f;",
         f"static constexpr float kResidualLimit = {fmt(controller['residual_limit'])}f;",
         f"static constexpr float kArcYawScale = {fmt(controller['arc_yaw_scale'])}f;",
         f"static constexpr float kBaseSpeedMin = {fmt(controller['base_speed_min'])}f;",
@@ -92,6 +94,13 @@ def render_header(controller: dict[str, Any]) -> str:
 def array_1d(name: str, values: list[float]) -> list[str]:
     rendered = ", ".join(f"{fmt(value)}f" for value in values)
     return [f"static constexpr float {name}[kParamCount] = {{", f"  {rendered}", "};", ""]
+
+
+def table_hz(controller: dict[str, Any], key: str) -> float:
+    value = float(controller.get(key, 0.0))
+    if value > 0.0:
+        return value
+    return 1.0 / float(controller["dt"])
 
 
 def array_2d(name: str, rows: list[list[float]]) -> list[str]:

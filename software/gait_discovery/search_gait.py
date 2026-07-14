@@ -99,6 +99,10 @@ PARAM_HIGH = np.array(
 PHASE_SLICE = slice(7, 10)
 HARMONIC_PHASE_SLICE = slice(18, 21)
 HEADING_TRIM_LIMIT = 0.35
+YAW_LOW_DRIFT_FREQ_RANGE = (0.70, 1.70)
+YAW_LOW_DRIFT_CENTER_RANGE = (-0.38, 0.38)
+YAW_LOW_DRIFT_AMPLITUDE_RANGE = (0.12, 0.88)
+YAW_LOW_DRIFT_HARMONIC_RANGE = (-0.22, 0.22)
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,8 @@ class RolloutResult:
     mean_planar_drift: float
     max_planar_drift: float
     rms_planar_drift: float
+    yaw_target_fraction: float
+    yaw_gate_pass: bool
     mean_abs_planar_speed: float
     max_abs_planar_speed: float
     mean_abs_yaw_error: float
@@ -151,6 +157,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--episode-seconds", type=float, default=4.0)
     parser.add_argument(
+        "--search-space",
+        choices=("default", "yaw_low_drift"),
+        default="default",
+        help="Narrow yaw_low_drift locks unused yaw params and searches a smoother gait space.",
+    )
+    parser.add_argument(
         "--frame-skip",
         type=int,
         default=50,
@@ -159,9 +171,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--yaw-target-rate-per-command",
         type=float,
-        default=0.24,
+        default=0.36,
         help="Yaw scoring target in rad/s for abs(command)=1.0.",
     )
+    parser.add_argument("--yaw-final-drift-limit-m", type=float, default=0.040)
+    parser.add_argument("--yaw-mean-drift-limit-m", type=float, default=0.025)
+    parser.add_argument("--yaw-max-drift-limit-m", type=float, default=0.040)
+    parser.add_argument("--yaw-min-target-frac", type=float, default=0.65)
     parser.add_argument(
         "--episode-seconds-suite",
         type=str,
@@ -213,7 +229,7 @@ def command_for_primitive(primitive: str) -> tuple[float, float]:
     raise ValueError(f"Unknown primitive: {primitive}")
 
 
-def initial_mean() -> np.ndarray:
+def initial_mean(search_space: str = "default") -> np.ndarray:
     mean = (PARAM_LOW + PARAM_HIGH) * 0.5
     mean[0] = 1.25
     mean[1:4] = 0.0
@@ -224,10 +240,18 @@ def initial_mean() -> np.ndarray:
     mean[14] = 0.06
     mean[15:18] = np.array([0.0, 0.65, -0.65])
     mean[18:21] = 0.0
+    if search_space == "yaw_low_drift":
+        mean[0] = 1.30
+        mean[1:4] = np.array([0.00, -0.06, 0.06])
+        mean[4:7] = np.array([0.58, 0.62, 0.62])
+        mean[7:10] = np.array([0.0, 2.0 * np.pi / 3.0, -2.0 * np.pi / 3.0])
+        mean[10:13] = 0.0
+        mean[13:18] = 0.0
+        mean[18:21] = 0.0
     return mean
 
 
-def initial_std() -> np.ndarray:
+def initial_std(search_space: str = "default") -> np.ndarray:
     std = (PARAM_HIGH - PARAM_LOW) * 0.30
     std[0] = 0.45
     std[1:4] = 0.22
@@ -238,12 +262,42 @@ def initial_std() -> np.ndarray:
     std[14] = 0.12
     std[15:18] = 0.50
     std[18:21] = 1.20
+    if search_space == "yaw_low_drift":
+        std[0] = 0.26
+        std[1:4] = 0.16
+        std[4:7] = 0.18
+        std[7:10] = 1.05
+        std[10:13] = 0.07
+        std[13:18] = 0.0
+        std[18:21] = 0.85
     return std
 
 
-def clip_params(params: np.ndarray) -> np.ndarray:
+def parameter_bounds(search_space: str = "default") -> tuple[np.ndarray, np.ndarray]:
+    low = PARAM_LOW.copy()
+    high = PARAM_HIGH.copy()
+    if search_space == "yaw_low_drift":
+        low[0], high[0] = YAW_LOW_DRIFT_FREQ_RANGE
+        low[1:4] = YAW_LOW_DRIFT_CENTER_RANGE[0]
+        high[1:4] = YAW_LOW_DRIFT_CENTER_RANGE[1]
+        low[4:7] = YAW_LOW_DRIFT_AMPLITUDE_RANGE[0]
+        high[4:7] = YAW_LOW_DRIFT_AMPLITUDE_RANGE[1]
+        low[10:13] = YAW_LOW_DRIFT_HARMONIC_RANGE[0]
+        high[10:13] = YAW_LOW_DRIFT_HARMONIC_RANGE[1]
+        low[13:18] = 0.0
+        high[13:18] = 0.0
+    return low, high
+
+
+def clip_params(
+    params: np.ndarray,
+    low: np.ndarray | None = None,
+    high: np.ndarray | None = None,
+) -> np.ndarray:
     params = normalize_params(params)
-    clipped = np.clip(params, PARAM_LOW, PARAM_HIGH)
+    low = PARAM_LOW if low is None else low
+    high = PARAM_HIGH if high is None else high
+    clipped = np.clip(params, low, high)
     clipped[PHASE_SLICE] = wrap_pi(clipped[PHASE_SLICE])
     clipped[HARMONIC_PHASE_SLICE] = wrap_pi(clipped[HARMONIC_PHASE_SLICE])
     return clipped
@@ -353,6 +407,10 @@ def yaw_quality_score(
     mean_action_accel: float,
     mean_abs_action: float,
     target_progress: float,
+    final_drift_limit_m: float,
+    mean_drift_limit_m: float,
+    max_drift_limit_m: float,
+    min_target_frac: float,
     terminated: bool,
     length: int,
     max_steps: int,
@@ -369,11 +427,24 @@ def yaw_quality_score(
     rewarded_progress = min(useful_progress, target_progress)
     target_error = abs(progress - target_progress)
     wrong_way_penalty = 520.0 * max(0.0, -progress)
-    underspin_penalty = 190.0 * max(0.0, 0.65 * target_progress - useful_progress)
-    no_turn_penalty = 420.0 * max(0.0, 0.25 * target_progress - useful_progress)
+    underspin_penalty = 460.0 * max(
+        0.0, min_target_frac * target_progress - useful_progress
+    )
+    no_turn_penalty = 720.0 * max(0.0, 0.35 * target_progress - useful_progress)
     overspin_penalty = 125.0 * max(0.0, useful_progress - 1.08 * target_progress)
+    final_excess = max(0.0, planar_drift - final_drift_limit_m)
+    mean_excess = max(0.0, mean_planar_drift - mean_drift_limit_m)
+    max_excess = max(0.0, max_planar_drift - max_drift_limit_m)
+    gate_pass = (
+        useful_progress >= min_target_frac * target_progress
+        and planar_drift <= final_drift_limit_m
+        and mean_planar_drift <= mean_drift_limit_m
+        and max_planar_drift <= max_drift_limit_m
+        and not terminated
+    )
+    gate_bonus = 240.0 + 80.0 * min(useful_progress / target_progress, 1.25) if gate_pass else 0.0
     score = (
-        520.0 * rewarded_progress
+        720.0 * rewarded_progress
         - 180.0 * target_error
         - 1600.0 * planar_drift
         - 3600.0 * mean_planar_drift
@@ -392,6 +463,10 @@ def yaw_quality_score(
         - 24.0 * mean_action_delta
         - 42.0 * mean_action_accel
         - 4.0 * mean_abs_action
+        - 9000.0 * final_excess
+        - 11000.0 * mean_excess
+        - 14000.0 * max_excess
+        + gate_bonus
         - wrong_way_penalty
         - underspin_penalty
         - no_turn_penalty
@@ -399,7 +474,7 @@ def yaw_quality_score(
     )
     if terminated:
         remaining_frac = max(0.0, (max_steps - length) / max_steps)
-        score -= 2800.0 + 2200.0 * remaining_frac
+        score -= 6500.0 + 5000.0 * remaining_frac
     return float(score)
 
 
@@ -514,6 +589,10 @@ def rollout(
         mean_action_accel=float(np.mean(action_accels)),
         mean_abs_action=float(np.mean(abs_actions)),
         yaw_target_rate_per_command=args.yaw_target_rate_per_command,
+        final_drift_limit_m=args.yaw_final_drift_limit_m,
+        mean_drift_limit_m=args.yaw_mean_drift_limit_m,
+        max_drift_limit_m=args.yaw_max_drift_limit_m,
+        min_target_frac=args.yaw_min_target_frac,
     )
     return result
 
@@ -545,6 +624,10 @@ def result_from_info(
     mean_action_accel: float,
     mean_abs_action: float,
     yaw_target_rate_per_command: float,
+    final_drift_limit_m: float,
+    mean_drift_limit_m: float,
+    max_drift_limit_m: float,
+    min_target_frac: float,
 ) -> RolloutResult:
     x_distance = float(info.get("x_distance", 0.0))
     y_distance = float(info.get("y_distance", 0.0))
@@ -556,9 +639,19 @@ def result_from_info(
         * elapsed_time
     )
     yaw_distance_error = yaw_distance - target_yaw_distance
+    yaw_target_fraction = yaw_distance / max(1.0e-6, target_yaw_distance)
     cross_track_error = float(info.get("cross_track_error", 0.0))
     heading_error = float(info.get("heading_error", 0.0))
     planar_drift = float(np.hypot(x_distance, y_distance))
+    useful_yaw = max(0.0, yaw_distance)
+    yaw_gate_pass = (
+        primitive in ("yaw-left", "yaw-right")
+        and useful_yaw >= min_target_frac * max(1.0e-6, target_yaw_distance)
+        and planar_drift <= final_drift_limit_m
+        and mean_planar_drift <= mean_drift_limit_m
+        and max_planar_drift <= max_drift_limit_m
+        and not terminated
+    )
 
     if primitive in ("forward", "backward"):
         progress = line_distance
@@ -598,6 +691,10 @@ def result_from_info(
             mean_action_accel=mean_action_accel,
             mean_abs_action=mean_abs_action,
             target_progress=target_yaw_distance,
+            final_drift_limit_m=final_drift_limit_m,
+            mean_drift_limit_m=mean_drift_limit_m,
+            max_drift_limit_m=max_drift_limit_m,
+            min_target_frac=min_target_frac,
             terminated=terminated,
             length=length,
             max_steps=max_steps,
@@ -639,6 +736,8 @@ def result_from_info(
         mean_planar_drift=mean_planar_drift,
         max_planar_drift=max_planar_drift,
         rms_planar_drift=rms_planar_drift,
+        yaw_target_fraction=yaw_target_fraction,
+        yaw_gate_pass=bool(yaw_gate_pass),
         mean_abs_planar_speed=mean_abs_planar_speed,
         max_abs_planar_speed=max_abs_planar_speed,
         mean_abs_yaw_error=mean_abs_yaw_error,
@@ -685,6 +784,8 @@ def average_results(results: list[RolloutResult]) -> RolloutResult:
         series = [getattr(result, key) for result in results]
         if key == "terminated":
             values[key] = any(bool(value) for value in series)
+        elif key == "yaw_gate_pass":
+            values[key] = all(bool(value) for value in series)
         elif key == "length":
             values[key] = int(round(float(np.mean(series))))
         else:
@@ -701,8 +802,9 @@ def run_search(args: argparse.Namespace) -> Path:
     metrics_path = out_dir / "metrics.csv"
     best_path = out_dir / "best_params.json"
 
-    mean = initial_mean()
-    std = initial_std()
+    low, high = parameter_bounds(args.search_space)
+    mean = clip_params(initial_mean(args.search_space), low, high)
+    std = initial_std(args.search_space)
     if args.init_params is not None:
         init_primitive, init_params = load_params(args.init_params)
         if init_primitive != args.primitive and not args.init_inverse:
@@ -719,8 +821,9 @@ def run_search(args: argparse.Namespace) -> Path:
             mean = inverse_translation_params(init_params)
         else:
             mean = init_params
-        std = initial_std() * args.init_std_scale
-    min_std = (PARAM_HIGH - PARAM_LOW) * args.min_std_frac
+        mean = clip_params(mean, low, high)
+        std = initial_std(args.search_space) * args.init_std_scale
+    min_std = (high - low) * args.min_std_frac
     elite_count = max(2, int(round(args.population * args.elite_frac)))
     best_params = mean.copy()
     best_result = evaluate_candidate(best_params, args, args.seed + 1_000_000)
@@ -744,7 +847,7 @@ def run_search(args: argparse.Namespace) -> Path:
                 if iteration == 0 and candidate_index == 0:
                     params = mean.copy()
                 else:
-                    params = clip_params(rng.normal(mean, std))
+                    params = clip_params(rng.normal(mean, std), low, high)
                 result = evaluate_candidate(
                     params,
                     args,
@@ -757,7 +860,11 @@ def run_search(args: argparse.Namespace) -> Path:
             elite_params = np.stack([params for _, params, _ in elites])
             elite_mean = np.mean(elite_params, axis=0)
             elite_std = np.std(elite_params, axis=0)
-            mean = clip_params(args.momentum * elite_mean + (1.0 - args.momentum) * mean)
+            mean = clip_params(
+                args.momentum * elite_mean + (1.0 - args.momentum) * mean,
+                low,
+                high,
+            )
             std = np.maximum(
                 args.momentum * elite_std + (1.0 - args.momentum) * std,
                 min_std,
@@ -784,6 +891,9 @@ def run_search(args: argparse.Namespace) -> Path:
                 f"best_score={best_result.score:.3f} "
                 f"iter_best={candidates[0][2].score:.3f} "
                 f"progress={best_result.progress:.4f} "
+                f"target_frac={best_result.yaw_target_fraction:.2f} "
+                f"max_drift={best_result.max_planar_drift:.4f} "
+                f"gate={int(best_result.yaw_gate_pass)} "
                 f"cross={best_result.cross_track_error:.4f} "
                 f"heading={best_result.heading_error:.3f} "
                 f"len={best_result.length} "
@@ -812,6 +922,13 @@ def save_params(
         "domain_randomization": args.domain_randomization,
         "domain_randomization_strength": args.domain_randomization_strength,
         "randomize_reset": args.randomize_reset,
+        "search_space": args.search_space,
+        "yaw_drift_gate": {
+            "final_m": float(args.yaw_final_drift_limit_m),
+            "mean_m": float(args.yaw_mean_drift_limit_m),
+            "max_m": float(args.yaw_max_drift_limit_m),
+            "min_target_frac": float(args.yaw_min_target_frac),
+        },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
 

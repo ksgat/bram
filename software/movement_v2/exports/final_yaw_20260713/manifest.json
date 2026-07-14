@@ -1,0 +1,126 @@
+{
+  "kind": "bram_movement_v2_final_yaw_policy",
+  "date": "2026-07-13",
+  "status": "final_candidate",
+  "acceptance_gate": {
+    "final_planar_drift_m": 0.04,
+    "mean_planar_drift_m": 0.025,
+    "max_planar_drift_m": 0.04,
+    "min_target_fraction": 0.65,
+    "no_termination": true
+  },
+  "runtime_strategy": {
+    "yaw_left_base": "cpg_params",
+    "yaw_left_full": "residual_policy_on_cpg_params",
+    "yaw_right_full": "residual_policy_on_base_table",
+    "note": "Use the direction-specific residual checkpoints for full left and full right yaw. The residual checkpoint from the earlier all-direction run is not a passing yaw generalist. The exported left table does not reproduce the direct 10 Hz held CPG search result."
+  },
+  "yaw_left": {
+    "artifact": "yaw-left_base_params.json",
+    "table_artifact_not_promoted": "yaw-left_base_table.json",
+    "source_run": "software/movement_v2/runs/yaw_base_residual/yaw_base_residual_20260712_005923",
+    "yaw_distance_rad": 1.7308944107056052,
+    "target_fraction": 0.8031719441237691,
+    "final_planar_drift_m": 0.015008777028139528,
+    "mean_planar_drift_m": 0.010637120040520285,
+    "max_planar_drift_m": 0.02931771214750608,
+    "terminated": false,
+    "gate_pass": true
+  },
+  "yaw_left_8s_direct_cpg": {
+    "artifact": "yaw-left_base_params.json",
+    "yaw_distance_rad": 2.297307244669511,
+    "target_fraction": 0.797676126621358,
+    "final_planar_drift_m": 0.026965498014792772,
+    "mean_planar_drift_m": 0.011092310719643832,
+    "max_planar_drift_m": 0.03581876571649391,
+    "terminated": false,
+    "gate_pass": true
+  },
+  "yaw_left_full": {
+    "artifact": "yaw-left_residual_policy_best.pt",
+    "base_params": "yaw-left_base_params.json",
+    "metrics": "yaw-left_residual_metrics.csv",
+    "source_run": "software/movement_v2/runs/yaw_left_residual_cpg/yaw_residual_20260713_185146",
+    "selected_checkpoint": "best_eval_score",
+    "frame_skip": 50,
+    "policy_hz": 10.0,
+    "residual_limit": 0.12,
+    "slew_limit": 0.0,
+    "yaw_distance_rad": 2.2849689903253645,
+    "target_fraction": 0.7933920105296404,
+    "final_planar_drift_m": 0.007728018303852137,
+    "mean_planar_drift_m": 0.010865370187007672,
+    "max_planar_drift_m": 0.01974429430775138,
+    "terminated": false,
+    "gate_pass": true
+  },
+  "yaw_left_final_checkpoint_row": {
+    "artifact": "yaw-left_residual_policy_final.pt",
+    "yaw_distance_rad": 2.263537236032654,
+    "target_fraction": 0.785950429178005,
+    "final_planar_drift_m": 0.022318476112785,
+    "mean_planar_drift_m": 0.01462893174408,
+    "max_planar_drift_m": 0.030704921893238,
+    "terminated": false,
+    "gate_pass": true
+  },
+  "yaw_left_exported_table_replay": {
+    "artifact": "yaw-left_base_table.json",
+    "status": "not_promoted",
+    "yaw_distance_rad": 0.3130894986928898,
+    "final_planar_drift_m": 0.1316871538260192,
+    "mean_planar_drift_m": 0.07492356767288061,
+    "max_planar_drift_m": 0.14272388712470127,
+    "terminated": false,
+    "gate_pass": false,
+    "note": "Interpolated table replay changes the 10 Hz held CPG contact timing and should not be used as the left yaw runtime artifact."
+  },
+  "yaw_right_full": {
+    "artifact": "yaw-right_residual_policy_finetuned_best.pt",
+    "base_table": "yaw-right_residual_base_table.json",
+    "training_left_table": "yaw-left_residual_training_base_table.json",
+    "metrics": "yaw-right_residual_finetuned_metrics.csv",
+    "source_run": "software/movement_v2/runs/yaw_right_residual_finetune_tight/yaw_residual_20260713_193828",
+    "selected_checkpoint": "best_eval_score",
+    "frame_skip": 10,
+    "policy_hz": 50.0,
+    "residual_limit": 0.18,
+    "slew_limit": 0.25,
+    "yaw_distance_rad": 2.3846195485440074,
+    "target_fraction": 0.8279928988000026,
+    "final_planar_drift_m": 0.005272252326576046,
+    "mean_planar_drift_m": 0.010667702089760582,
+    "max_planar_drift_m": 0.02014086501962349,
+    "terminated": false,
+    "gate_pass": true
+  },
+  "yaw_right_previous_full": {
+    "artifact": "yaw-right_residual_policy_best.pt",
+    "base_table": "yaw-right_residual_base_table.json",
+    "metrics": "yaw-right_residual_metrics.csv",
+    "source_run": "software/movement_v2/runs/yaw_base_residual/yaw_base_residual_20260712_005048/residual/yaw_residual_20260712_020910",
+    "selected_checkpoint": "best_eval_score",
+    "yaw_distance_rad": 2.34082054339191,
+    "target_fraction": 0.812784911247191,
+    "final_planar_drift_m": 0.016312667234419154,
+    "mean_planar_drift_m": 0.01399095776991733,
+    "max_planar_drift_m": 0.02789422188759939,
+    "terminated": false,
+    "gate_pass": true
+  },
+  "yaw_right_final_checkpoint_row": {
+    "artifact": "yaw-right_residual_policy_finetuned_final.pt",
+    "yaw_distance_rad": 2.491191920100814,
+    "target_fraction": 0.8649971944794493,
+    "final_planar_drift_m": 0.01667855802758942,
+    "mean_planar_drift_m": 0.02036100749214345,
+    "max_planar_drift_m": 0.039988478933155,
+    "terminated": false,
+    "gate_pass": false
+  },
+  "not_promoted": {
+    "residual_all_direction_generalist": "Only yaw_neg1 passed. yaw_pos05 and yaw_pos1 were wrong-sign in the selected residual checkpoint.",
+    "half_right_yaw": "yaw_neg05 did not pass the 4 cm gate in the residual all-command eval."
+  }
+}

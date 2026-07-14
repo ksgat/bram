@@ -184,6 +184,124 @@ paper's progress/height/up/action/velocity structure, but adds lighter versions
 of those yaw-in-place terms so PPO sees the same failure modes without exploding
 the value loss.
 
+For the near-term hardware target, yaw drift is gated over time, not only at the
+final pose. The current yaw gate is:
+
+- final planar drift `<= 0.040 m`
+- mean planar drift `<= 0.025 m`
+- max planar drift `<= 0.040 m`
+- no termination and no wrong-sign yaw
+
+The base yaw controller should be searched before residual RL. Use the narrow
+`yaw_low_drift` search space in `gait_discovery/search_gait.py`; it locks yaw
+parameters that do not affect the open-loop CPG, keeps amplitudes/harmonics in a
+smooth range, scores against a modest target yaw rate, and hard-gates final,
+mean, and max path drift.
+
+Run the base-search plus residual pipeline:
+
+```bash
+.venv-rl/bin/python software/movement_v2/run_yaw_base_residual_pipeline.py \
+  --directions both \
+  --iterations 24 \
+  --population 96 \
+  --episode-seconds-suite 4,8 \
+  --frame-skip 50 \
+  --output-hz 40 \
+  --residual-steps 50000 \
+  --no-randomize-reset
+```
+
+For a faster base-only pass:
+
+```bash
+.venv-rl/bin/python software/movement_v2/run_yaw_base_residual_pipeline.py \
+  --directions both \
+  --iterations 8 \
+  --population 48 \
+  --skip-residual
+```
+
+Residual yaw PPO lives in `train_yaw_residual_ppo.py`. It keeps the observation
+block from the primitive policies, then appends fixed-base yaw features so the
+residual can learn the base phase and timing. The base can be either a JSON
+action table or the original searched CPG params; use params when table
+resampling changes the contact timing.
+
+- previous `4` IMU quaternion frames
+- previous `6` emitted servo actions
+- yaw command scalar
+- current base action
+- previous base action
+- base phase `sin/cos`
+
+The actor output is a residual, not a full servo command:
+
+```text
+final_action = base_yaw(t, yaw_cmd) + residual_limit * abs(yaw_cmd) * residual
+```
+
+Run a 50k residual cutoff test around explicit yaw tables:
+
+```bash
+.venv-rl/bin/python software/movement_v2/train_yaw_residual_ppo.py \
+  --total-steps 50000 \
+  --num-envs 4 \
+  --rollout-steps 128 \
+  --eval-interval 10 \
+  --no-randomize-reset
+```
+
+The first 50k residual runs around the old 40 Hz planar yaw tables did **not**
+meet the stricter gate. The best observed eval still had zero passing commands;
+negative yaw drift stayed above `10 cm`. Treat this as a failed base/curriculum,
+not a reason to train the same setup longer.
+
+For a narrower right-yaw test, use direction-specific residual training with a
+larger residual and a training-only drift curriculum:
+
+```bash
+.venv-rl/bin/python software/movement_v2/train_yaw_residual_ppo.py \
+  --train-command yaw_neg1 \
+  --eval-suite train \
+  --total-steps 50000 \
+  --num-envs 4 \
+  --rollout-steps 128 \
+  --eval-interval 10 \
+  --no-randomize-reset \
+  --residual-limit 0.35 \
+  --start-final-drift-limit-m 0.12 \
+  --start-mean-drift-limit-m 0.08 \
+  --start-max-drift-limit-m 0.14 \
+  --drift-curriculum-steps 50000
+```
+
+That run improved the `yaw_neg1` base from about `10.05 cm` final drift /
+`13.58 cm` max drift to a best checkpoint around `6.59 cm` final drift /
+`10.37 cm` max drift while keeping about `3.09 rad` yaw over `8 s`. It is a real
+improvement, but still fails the current path-drift gate. The next thing to improve
+is the right-yaw base primitive/search, not another broad residual PPO run.
+
+Current final yaw candidate is packaged in
+`software/movement_v2/exports/final_yaw_20260713/manifest.json`:
+
+- full left yaw: `yaw-left_residual_policy_best.pt` on
+  `yaw-left_base_params.json`, `2.285 rad`, `0.77 cm` final drift,
+  `1.09 cm` mean drift, `1.97 cm` max drift, no termination. This runs at the
+  searched CPG's native `10 Hz` hold timing.
+- full right yaw: `yaw-right_residual_policy_finetuned_best.pt` on
+  `yaw-right_residual_base_table.json`, `2.385 rad`, `0.53 cm` final drift,
+  `1.07 cm` mean drift, `2.01 cm` max drift, no termination. This is the
+  right-only fine-tuned checkpoint; the previous all-command-selected right
+  checkpoint remains in the export package for comparison.
+- direct left CPG fallback: `yaw-left_base_params.json`, `2.297 rad`,
+  `2.70 cm` final drift, `1.11 cm` mean drift, `3.58 cm` max drift over `8 s`.
+- the earlier all-direction residual policy is **not** a passing yaw generalist:
+  `yaw_neg1` passed, but half-right and positive yaw did not. Use the
+  direction-specific residual checkpoints for full left/right yaw.
+- `yaw-left_base_table.json` is not promoted: interpolated table replay changes
+  the 10 Hz held CPG contact timing and drifts heavily.
+
 The old `gait_discovery` yaw tables are useful diagnostics, but they are not a
 clean teacher on the corrected `15.0 cm` model: full negative yaw can flip sign
 and full-rate tables drift heavily. Do not export a new yaw checkpoint unless it
@@ -226,6 +344,8 @@ The ESP32 runtime uses a hybrid primitive stack by default:
 
 - forward/back run actor policies online
 - yaw uses the base yaw table controller (`kUseBaseControllerForYaw = true`)
+- firmware control tick is `25 ms`; yaw table output updates at that tick
+- forward/back policy inference is held for two ticks, approximately `20 Hz`
 
 This avoids promoting the 10 Hz yaw PPO fine-tune, which did not beat the
 baseline strict eval. The online actor path still maintains the same observation

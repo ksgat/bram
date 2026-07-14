@@ -44,9 +44,7 @@ class BramController {
       return servoActionFromArray(base);
     }
     if (forwardMag < 0.05f) {
-      float yawValues[3];
-      yawAction(yaw, step, yawValues);
-      return servoActionFromArray(yawValues);
+      return yawActionAtTime(yaw, t);
     }
 
     float base[3];
@@ -76,6 +74,12 @@ class BramController {
                            1.0f);
     }
     return out;
+  }
+
+  ServoAction yawActionAtTime(float yawCommand, float elapsedSeconds) const {
+    float yawValues[3];
+    timedYawAction(yawCommand, elapsedSeconds, yawValues);
+    return servoActionFromArray(yawValues);
   }
 
  private:
@@ -218,6 +222,38 @@ class BramController {
     for (std::size_t i = 0; i < 3; ++i) {
       const float value = left ? bram_data::kYawLeftTable[row][i]
                                : bram_data::kYawRightTable[row][i];
+      out[i] = clip(magnitude * value, -1.0f, 1.0f);
+    }
+  }
+
+  static void timedYawAction(float yawCommand, float elapsedSeconds, float out[3]) {
+    const float magnitude = std::fabs(yawCommand);
+    if (magnitude < 1.0e-6f) {
+      out[0] = out[1] = out[2] = 0.0f;
+      return;
+    }
+
+    const bool left = yawCommand > 0.0f;
+    const std::size_t rows =
+        left ? bram_data::kYawLeftTableRows : bram_data::kYawRightTableRows;
+    const float tableHz = left ? bram_data::kYawLeftHz : bram_data::kYawRightHz;
+    if (rows == 0 || !(tableHz > 0.0f)) {
+      out[0] = out[1] = out[2] = 0.0f;
+      return;
+    }
+
+    const float wrapped =
+        std::fmod(maxFloat(0.0f, elapsedSeconds) * tableHz, static_cast<float>(rows));
+    const int low = positiveMod(static_cast<int64_t>(std::floor(wrapped)),
+                                static_cast<int>(rows));
+    const int high = positiveMod(static_cast<int64_t>(low + 1), static_cast<int>(rows));
+    const float alpha = clip(wrapped - std::floor(wrapped), 0.0f, 1.0f);
+    for (std::size_t i = 0; i < 3; ++i) {
+      const float lowValue = left ? bram_data::kYawLeftTable[low][i]
+                                  : bram_data::kYawRightTable[low][i];
+      const float highValue = left ? bram_data::kYawLeftTable[high][i]
+                                   : bram_data::kYawRightTable[high][i];
+      const float value = (1.0f - alpha) * lowValue + alpha * highValue;
       out[i] = clip(magnitude * value, -1.0f, 1.0f);
     }
   }
